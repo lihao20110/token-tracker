@@ -104,6 +104,36 @@ def test_claude_no_prompts_returns_none(tmp_path):
     assert _parse_claude(_write_jsonl(tmp_path / "s.jsonl", rows), "p", 3) is None
 
 
+def test_claude_filters_bare_slash_command_records(tmp_path):
+    # CC 对 slash 命令实测记两条 user 消息：<command-name> 包裹（既有过滤）+ 裸文本（本用例）
+    rows = [
+        _u("/compact"),
+        _u("/cd ~/project/token-tracker"),
+        _u("/plugin:cmd-name 带参数"),
+        _u("/Users/stormzhang/x.md 这个文件帮我看下"),  # 路径开头的真提示词不误伤
+    ]
+    parsed = _parse_claude(_write_jsonl(tmp_path / "s.jsonl", rows), "p", 5)
+    assert [p.text for p in parsed.prompts] == ["/Users/stormzhang/x.md 这个文件帮我看下"]
+
+
+def test_claude_skips_compact_summary_injection(tmp_path):
+    # /compact 后注入的巨型摘要带 isCompactSummary/isVisibleInTranscriptOnly 标记：
+    # 不进提示词、不消费待回答的 AskUserQuestion（压缩≠回答了提问）、不计活动时间
+    ask = [{"type": "tool_use", "id": "t1", "name": "AskUserQuestion",
+            "input": {"questions": [{"question": "合并到 main 吗？", "options": [{"label": "合并"}]}]}}]
+    rows = [
+        _u("真提示词", ts=_iso(300)),
+        _a(ask, ts=_iso(240)),
+        _u("This session is being continued from a previous conversation...", ts=_iso(10),
+           isCompactSummary=True, isVisibleInTranscriptOnly=True),
+    ]
+    parsed = _parse_claude(_write_jsonl(tmp_path / "s.jsonl", rows), "p", 5)
+    assert [p.text for p in parsed.prompts] == ["真提示词"]
+    assert "合并到 main 吗？" in parsed.next_hint
+    # 活动时间停在压缩前最后一条真实事件（240s 前），不被摘要（10s 前）顶新
+    assert (datetime.now(UTC) - parsed.last_event).total_seconds() > 120
+
+
 # --- 状态推断 ---
 
 def test_infer_state_matrix():

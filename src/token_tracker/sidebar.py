@@ -39,6 +39,10 @@ DEFAULT_MAX_SESSIONS = 10   # 最多显示 N 个会话（按最近活动取前 N
 # 后台任务通知 / harness 注入的 system-reminder）——按文本片段级过滤，见 _claude_prompt_text
 _CLAUDE_SKIP_PREFIXES = ("<command-", "<local-command-", "[Request interrupted",
                          "<task-notification", "<system-reminder")
+# slash 命令 CC 实测记**两条** user 消息：<command-name> 包裹（上面前缀过滤）+ 裸文本
+# （"/compact"、"/cd ~/x"，无任何标记字段）——裸文本按首 token 识别：/命令名（可带
+# 插件:命令 冒号形式与参数）。路径类真提示词（/Users/... 有第二个斜杠）不匹配、不误伤
+_SLASH_COMMAND_RE = re.compile(r"^/[A-Za-z0-9][A-Za-z0-9_-]*(:[A-Za-z0-9_-]+)?(\s|$)")
 # Codex 里包装成 user_message 的注入内容（用户指令模板 / 环境上下文等）
 _CODEX_SKIP_PREFIXES = ("<user_instructions", "<environment_context", "<ide_", "<permissions", "<turn_")
 
@@ -249,7 +253,10 @@ def _parse_claude(path: Path, fallback_project: str, max_prompts: int) -> _Parse
             cwd = data.get("cwd")
             if cwd:
                 project = project_from_cwd(cwd)
-            if data.get("isMeta"):
+            # compact 摘要（isCompactSummary）等注入消息不是主人敲的：不进提示词、
+            # 不消费 pending_question（压缩≠回答了提问）、不计活动时间
+            if (data.get("isMeta") or data.get("isCompactSummary")
+                    or data.get("isVisibleInTranscriptOnly")):
                 continue
             message = data.get("message")
             if not isinstance(message, dict):
@@ -316,8 +323,9 @@ def _claude_prompt_text(content: object) -> str | None:
                  if isinstance(i, dict) and i.get("type") == "text"]
     else:
         return None
-    kept = [p.strip() for p in parts
-            if p.strip() and not p.strip().startswith(_CLAUDE_SKIP_PREFIXES)]
+    kept = [frag for frag in (p.strip() for p in parts)
+            if frag and not frag.startswith(_CLAUDE_SKIP_PREFIXES)
+            and not _SLASH_COMMAND_RE.match(frag)]
     if not kept:
         return None
     return "\n".join(kept)
