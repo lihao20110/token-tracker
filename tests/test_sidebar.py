@@ -398,6 +398,23 @@ def test_render_hint_line_by_line_hanging_indent():
     assert all(len(ln.rstrip()) <= 40 - 2 for ln in hint_lines)  # 右侧留白 2 格
 
 
+def test_render_mixed_cjk_ascii_fills_width():
+    # 回归：Rich 词折行把空格后的整段中文当一个词挪下行，单行截断的省略号
+    # 出现在断词点、右侧大片留白；硬折后每行应填满可用宽度再截断
+    now = datetime.now(UTC)
+    sessions = [LiveSession(agent_id="claude-code", session_id="s1", project="proj",
+                            last_activity=now, state=WAITING,
+                            prompts=[Prompt("短", now)],
+                            next_hint="取最后一条 AI 回复的尾部继续更多内容这一行非常长必须截断")]
+    console = Console(record=True, width=40, force_terminal=True)
+    console.print(render_sidebar(sessions))
+    from rich.cells import cell_len
+    hint_line = next(ln for ln in console.export_text().splitlines() if "↳" in ln)
+    assert hint_line.rstrip().endswith("…")
+    # 按终端格宽（CJK 一字两格）应填满到右留白附近，不在断词点提前留白
+    assert cell_len(hint_line.rstrip()) >= 40 - 2 - 2
+
+
 def test_render_sidebar_empty():
     console = Console(record=True, width=60)
     console.print(render_sidebar([]))

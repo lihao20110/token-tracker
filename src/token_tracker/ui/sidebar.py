@@ -7,6 +7,7 @@
 
 from datetime import UTC, datetime
 
+from rich.cells import chop_cells
 from rich.console import Console, ConsoleOptions, Group, RenderResult
 from rich.text import Text
 
@@ -67,14 +68,16 @@ class _WrappedLine:
         prefix_width = self.first.cell_len
         cont = self.cont if self.cont is not None else Text(" " * prefix_width)
         avail = max(10, options.max_width - prefix_width - _RIGHT_PAD)
-        wrapped = Text(self.text, style=self.style).wrap(console, avail)
-        kept = list(wrapped[:self.max_lines])
-        if len(wrapped) > self.max_lines and kept:
-            last = kept[-1]
-            last.rstrip()
-            last.truncate(avail - 1)
-            last.append("…", self.style or None)
-        for i, body in enumerate(kept):
+        # 按字符格硬折（chop_cells），不按词断行——Rich 词折行在中英混排时会把空格后的
+        # 整段中文当一个词整体挪下一行，导致截断的省略号出现在断词点、行尾大片留白
+        pieces = chop_cells(self.text, avail)
+        kept = pieces[:self.max_lines]
+        truncated = len(pieces) > self.max_lines
+        for i, piece in enumerate(kept):
+            body = Text(piece.rstrip(), style=self.style)
+            if truncated and i == len(kept) - 1:
+                body.truncate(avail - 1)
+                body.append("…", self.style or None)
             out = Text(no_wrap=True)
             out.append_text(self.first if i == 0 else cont)
             out.append_text(body)
