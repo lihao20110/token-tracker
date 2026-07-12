@@ -261,6 +261,30 @@ def test_render_head_click_meta_and_link_style():
     assert actions == [] and not underlined
 
 
+def test_click_link_id_stable_across_renders():
+    # 回归：Rich 每次 from_meta 生成随机 link_id，0.5s 整帧重绘若每帧新建样式，
+    # Textual 按 link_id 定位的 hover 高亮半秒即失联（下划线时有时无）
+    from rich.text import Text
+    now = datetime.now(UTC)
+    session = LiveSession(agent_id="claude-code", session_id="sZ", project="p",
+                          last_activity=now, state=WAITING,
+                          prompts=[Prompt("x", now)], terminal={"iterm": "w0t0p0:X"})
+
+    def _link_ids(group):
+        ids = set()
+        for r in group.renderables:
+            if isinstance(r, Text):
+                for span in r.spans:
+                    st = span.style
+                    if getattr(st, "_meta", None):
+                        ids.add(st.link_id)
+        return ids
+
+    first, second = _link_ids(render_sidebar([session])), _link_ids(render_sidebar([session]))
+    assert len(first) == 1
+    assert first == second  # 跨帧稳定
+
+
 def test_heartbeat_marks_running(tmp_path):
     base = _make_claude_base(tmp_path)
     d = base / "-Users-x-project-alpha"

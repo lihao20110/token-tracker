@@ -68,8 +68,8 @@ class _SidebarBody(Static):
 
     静止态：项目名的蓝下划线由渲染层直接写在 span 样式里；link_style 返回空样式
     （渲染路径 `if link_style:` 短路），不给整行叠加任何默认链接色。
-    hover 态：整条可点行统一成**蓝色下划线**（不统一配色会让各段保持原色、
-    下划线五颜六色——主人反馈过）；颜色取 tt 主题 blue，与静止态同源。
+    hover 态：整条可点行**只加下划线，字色/背景不变**（主人定）。终端下划线颜色
+    物理上绑定该格字色（SGR 无独立下划线色通道给 Rich 用），故各段下划线随字色。
     """
 
     @property
@@ -78,7 +78,7 @@ class _SidebarBody(Static):
 
     @property
     def link_style_hover(self) -> RichStyle:
-        return RichStyle(color=get_theme(config.resolve_theme())["base"]["blue"], underline=True)
+        return RichStyle(underline=True)
 
 
 class SidebarApp(App[None]):

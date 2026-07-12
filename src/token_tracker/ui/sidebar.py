@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from rich.cells import cell_len, chop_cells
 from rich.console import Console, ConsoleOptions, Group, RenderResult
+from rich.style import Style
 from rich.text import Text
 
 from ..i18n import t
@@ -26,6 +27,21 @@ _CLOCK_ZONES = (("sidebar_tz_bj", "Asia/Shanghai"),
 _STATE_DOTS = {RUNNING: "●", ATTENTION: "●", WAITING: "●", IDLE: "○"}
 # 运行中的动画帧（CC 同款星形轮转）；spinner_frame 由 Textual 壳的动画 tick 递增
 _SPINNER = "✢✳✻✽"
+
+# 点击样式按会话缓存：Rich 每次 Style.from_meta 都生成新的随机 link_id，而 Textual 的
+# hover 高亮按 link_id 定位——0.5s 整帧重绘若每次新建样式，悬停高亮半秒即失联（时有时无）。
+# 复用同一 Style 实例让 link_id 跨帧稳定。
+_click_styles: dict[str, Style] = {}
+
+
+def _click_style(session_id: str) -> Style:
+    style = _click_styles.get(session_id)
+    if style is None:
+        if len(_click_styles) > 256:
+            _click_styles.clear()
+        style = Style.from_meta({"@click": f"app.jump_to('{session_id}')"})
+        _click_styles[session_id] = style
+    return style
 
 _PROMPT_MAX_LINES = 2  # 每条提示词最多折 N 行，超出末行省略号
 _RIGHT_PAD = 2         # 正文右侧留白，折行不顶到窗格右缘
@@ -187,8 +203,9 @@ def render_sidebar(sessions: list[LiveSession], spinner_frame: int = 0) -> Group
         head.append(f"  {t('sidebar_state_' + s.state)}", style=_state_style(s.state))
         if s.terminal:
             # Textual 派发到 App.action_jump_to；必须带 app. 命名空间前缀——meta 点击的
-            # 默认派发目标是被点的 Static，不带前缀会静默失败。--once 纯 Rich 路径 meta 无害
-            head.apply_meta({"@click": f"app.jump_to('{s.session_id}')"})
+            # 默认派发目标是被点的 Static，不带前缀会静默失败。--once 纯 Rich 路径 meta 无害。
+            # 样式走 _click_style 缓存保证 link_id 跨帧稳定（hover 高亮才不会被重绘打断）
+            head.stylize(_click_style(s.session_id))
         lines.append(head)
         for i, p in enumerate(s.prompts):
             last = i == len(s.prompts) - 1
