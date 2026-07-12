@@ -35,13 +35,18 @@ def _write_jsonl(path: Path, rows: list[dict]) -> Path:
     return path
 
 
-def _u(content, ts: str = "2026-07-12T02:00:00.000Z", **extra) -> dict:
+def _iso(seconds_ago: float = 60) -> str:
+    """相对当前时间的 ISO 时间戳——last_activity 以内容事件时间为准，fixture 不能用死日期。"""
+    return (datetime.now(UTC) - timedelta(seconds=seconds_ago)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _u(content, ts: str | None = None, **extra) -> dict:
     return {"type": "user", "message": {"role": "user", "content": content},
-            "timestamp": ts, **extra}
+            "timestamp": ts or _iso(), **extra}
 
 
-def _a(content, model: str = "claude-fable-5") -> dict:
-    return {"type": "assistant", "timestamp": "2026-07-12T02:00:05.000Z",
+def _a(content, model: str = "claude-fable-5", ts: str | None = None) -> dict:
+    return {"type": "assistant", "timestamp": ts or _iso(55),
             "message": {"role": "assistant", "model": model, "content": content}}
 
 
@@ -152,19 +157,22 @@ def test_scan_claude_window_filter_and_sort(tmp_path):
     base = _make_claude_base(tmp_path)
     d = base / "-Users-x-project-alpha"
     now = datetime.now(UTC)
-    old = _write_jsonl(d / "old.jsonl", [_u("久远会话")])
+    old = _write_jsonl(d / "old.jsonl", [_u("久远会话", ts=_iso(24 * 3600))])
     ancient_ts = (now - timedelta(hours=24)).timestamp()
     os.utime(old, (ancient_ts, ancient_ts))
-    mid = _write_jsonl(d / "mid.jsonl", [_u("两分钟前的")])
+    mid = _write_jsonl(d / "mid.jsonl", [_u("两分钟前的", ts=_iso(120))])
     mid_ts = (now - timedelta(seconds=120)).timestamp()
     os.utime(mid, (mid_ts, mid_ts))
-    fresh = _write_jsonl(d / "fresh.jsonl", [_u("刚刚的")])
+    fresh = _write_jsonl(d / "fresh.jsonl", [_u("刚刚的", ts=_iso(3))])
     fresh_ts = (now - timedelta(seconds=3)).timestamp()
     os.utime(fresh, (fresh_ts, fresh_ts))
+    # 回归（design-agent 实测）：内容 24h 没动、但文件 mtime 被 CC 常驻进程触碰得很新
+    # ——活动时间以内容事件为准，这种会话必须被窗口过滤，不能靠 mtime 冒到第一位
+    _write_jsonl(d / "touched.jsonl", [_u("很久以前的内容", ts=_iso(24 * 3600))])
 
     got = _scan_claude_sessions(now - timedelta(hours=12), now, None, 3, dirs=[str(base)])
     got.sort(key=lambda s: s.last_activity, reverse=True)
-    assert [s.session_id for s in got] == ["fresh", "mid"]  # 24h 前的被窗口过滤
+    assert [s.session_id for s in got] == ["fresh", "mid"]  # 24h 前的与「假触碰」的都被过滤
     assert got[0].state == RUNNING
     assert got[1].state == WAITING
     assert got[0].project == "alpha"  # 无 cwd 时从目录名解码

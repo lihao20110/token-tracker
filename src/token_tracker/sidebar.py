@@ -73,6 +73,10 @@ class _Parsed:
     pending_tool: bool  # 末个工具调用尚无结果（CC）/ task 未 complete（Codex）
     model: str = ""
     next_hint: str = ""
+    # 最后一条有效事件（真实提示词/工具结果/AI 回复）的时间戳——「最近活动」的权威来源。
+    # 不能用文件 mtime：CC 常驻进程会对闲置会话的 transcript 做不改内容的周期性触碰
+    # （实测 design-agent 会话 5.5h 没动、mtime 却常新），mtime 只配当缓存键与窗口初筛。
+    last_event: datetime | None = None
 
 
 # 按 (mtime, size) 缓存解析结果：常驻刷新时只重解析有变化的文件
@@ -189,8 +193,8 @@ def _scan_claude_sessions(cutoff: datetime, now: datetime,
             mtime, parsed = _cache_get(path)
             if mtime <= 0:
                 continue
-            last_activity = datetime.fromtimestamp(mtime, UTC)
-            if last_activity < cutoff:
+            mtime_dt = datetime.fromtimestamp(mtime, UTC)
+            if mtime_dt < cutoff:  # 初筛：内容事件时间必然 ≤ mtime，mtime 过老可安全跳过
                 continue
             if parsed is None:
                 fallback = claude_adapter._extract_project_from_dir(path, base)
@@ -199,6 +203,10 @@ def _scan_claude_sessions(cutoff: datetime, now: datetime,
                     continue
                 _cache_put(path, parsed)
             if not parsed.prompts or parsed.session_id in seen:
+                continue
+            # 权威活动时间 = 内容里最后一条有效事件；CC 会对闲置会话做不改内容的 mtime 触碰
+            last_activity = parsed.last_event or mtime_dt
+            if last_activity < cutoff:
                 continue
             seen.add(parsed.session_id)
             sessions.append(LiveSession(
@@ -224,6 +232,7 @@ def _parse_claude(path: Path, fallback_project: str, max_prompts: int) -> _Parse
     model = ""
     last_reply = ""
     pending_question = ""  # 待回答的 AskUserQuestion（任何后续用户动作即视为不再待决）
+    last_event: datetime | None = None
     for data in iter_jsonl_dicts(path):
         if data.get("isSidechain"):  # 子代理 sidechain 的消息不是主人敲的提示词
             continue
@@ -244,16 +253,20 @@ def _parse_claude(path: Path, fallback_project: str, max_prompts: int) -> _Parse
             content = message.get("content")
             if _is_tool_result(content):
                 pending_tool = False
+                last_event = _parse_ts(data.get("timestamp")) or last_event
                 continue
             text = _claude_prompt_text(content)
-            if text is None:
+            if text is None:  # 注入通知/命令记录等：不算「主人动过」，不计活动时间
                 continue
-            prompts.append(Prompt(text=text, timestamp=_parse_ts(data.get("timestamp"))))
+            ts = _parse_ts(data.get("timestamp"))
+            prompts.append(Prompt(text=text, timestamp=ts))
+            last_event = ts or last_event
             pending_tool = False
         elif dtype == "assistant":
             message = data.get("message")
             if not isinstance(message, dict):
                 continue
+            last_event = _parse_ts(data.get("timestamp")) or last_event
             model = message.get("model") or model
             content = message.get("content")
             reply = ""
@@ -276,7 +289,8 @@ def _parse_claude(path: Path, fallback_project: str, max_prompts: int) -> _Parse
         return None
     # 「下一步」优先级链：结构化提问（待回答，零猜测）> 句子打分精简 > 末行兜底
     return _Parsed(session_id, project, prompts[-max_prompts:], pending_tool, model,
-                   next_hint=pending_question or _hint_text(last_reply))
+                   next_hint=pending_question or _hint_text(last_reply),
+                   last_event=last_event)
 
 
 def _is_tool_result(content: object) -> bool:
@@ -322,8 +336,8 @@ def _scan_codex_sessions(cutoff: datetime, now: datetime,
         mtime, parsed = _cache_get(path)
         if mtime <= 0:
             continue
-        last_activity = datetime.fromtimestamp(mtime, UTC)
-        if last_activity < cutoff:
+        mtime_dt = datetime.fromtimestamp(mtime, UTC)
+        if mtime_dt < cutoff:  # 初筛：内容事件时间必然 ≤ mtime
             continue
         if parsed is None:
             parsed = _parse_codex(path, max_prompts)
@@ -331,6 +345,9 @@ def _scan_codex_sessions(cutoff: datetime, now: datetime,
                 continue
             _cache_put(path, parsed)
         if not parsed.prompts or parsed.session_id in seen:
+            continue
+        last_activity = parsed.last_event or mtime_dt
+        if last_activity < cutoff:
             continue
         seen.add(parsed.session_id)
         sessions.append(LiveSession(
@@ -354,10 +371,14 @@ def _parse_codex(path: Path, max_prompts: int) -> _Parsed | None:
     prompts: list[Prompt] = []
     pending_task = False
     last_reply = ""
+    last_event: datetime | None = None
     for data in iter_jsonl_dicts(path):
         payload = data.get("payload")
         if not isinstance(payload, dict):
             continue
+        ts = _parse_ts(data.get("timestamp"))
+        if ts and (last_event is None or ts > last_event):
+            last_event = ts
         dtype = data.get("type")
         if dtype == "session_meta":
             session_id = payload.get("id", "") or session_id
@@ -381,7 +402,7 @@ def _parse_codex(path: Path, max_prompts: int) -> _Parsed | None:
     if not prompts:
         return None
     return _Parsed(session_id or path.stem, project, prompts[-max_prompts:], pending_task,
-                   next_hint=_hint_text(last_reply))
+                   next_hint=_hint_text(last_reply), last_event=last_event)
 
 
 _HINT_MAX_LINES = 5   # 「下一步」显示上限（AskUserQuestion 格式化路径用；打分路径上限 3）
