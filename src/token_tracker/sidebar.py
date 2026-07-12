@@ -31,7 +31,7 @@ HEARTBEAT_FRESH_S = 15      # 心跳多新算「正在跑」
 IDLE_AFTER_S = 30 * 60      # 多久无动静降级为 idle
 
 DEFAULT_HOURS_BACK = 12     # 只看窗口期内有动静的会话
-DEFAULT_MAX_PROMPTS = 3     # 每会话保留最近 N 条提示词
+DEFAULT_MAX_PROMPTS = 5     # 每会话保留最近 N 条提示词
 
 # CC 里非「人敲的提示词」的 user 行前缀（slash command 记录 / 本地命令回显 / 中断标记）
 _CLAUDE_SKIP_PREFIXES = ("<command-", "<local-command-", "[Request interrupted")

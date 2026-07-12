@@ -219,7 +219,7 @@ def _summary_from_sessions(sessions) -> StatusSummary:
 
 
 def _cmd_sidebar(agents, args: list[str]) -> None:
-    """常驻侧边栏（窄窗格用）：活跃会话 + 各自最近提示词，2s 轮询刷新。
+    """常驻侧边栏（窄窗格用）：活跃会话 + 各自最近提示词，5s 轮询刷新。
     `--once` 或非 tty 打一帧快照即退（脚本 / `!tt sidebar` / 测试用）。
     只读 transcript 与心跳文件，不写任何产物；不跟随会话收窄 agent——
     侧边栏本职是「总览所有会话」，显式 --claude / --codex 才过滤。"""
@@ -235,7 +235,7 @@ def _cmd_sidebar(agents, args: list[str]) -> None:
         with Live(render_sidebar(scan_sessions(agent_ids=agent_ids)),
                   console=get_console(), screen=True, auto_refresh=False) as live:
             while True:
-                time.sleep(2.0)
+                time.sleep(5.0)
                 live.update(render_sidebar(scan_sessions(agent_ids=agent_ids)), refresh=True)
     except KeyboardInterrupt:
         pass
