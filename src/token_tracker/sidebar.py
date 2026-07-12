@@ -30,8 +30,9 @@ RUNNING_WINDOW_S = 30       # transcript 多久内有写盘算「正在跑」
 HEARTBEAT_FRESH_S = 15      # 心跳多新算「正在跑」
 IDLE_AFTER_S = 30 * 60      # 多久无动静降级为 idle
 
-DEFAULT_HOURS_BACK = 12     # 只看窗口期内有动静的会话
+DEFAULT_HOURS_BACK = 5      # 只看窗口期内有动静的会话
 DEFAULT_MAX_PROMPTS = 5     # 每会话保留最近 N 条提示词
+DEFAULT_MAX_SESSIONS = 10   # 最多显示 N 个会话（按最近活动取前 N，窗口内不足 N 就全显）
 
 # CC 里非「人敲的提示词」的内容前缀（slash command 记录 / 本地命令回显 / 中断标记 /
 # 后台任务通知 / harness 注入的 system-reminder）——按文本片段级过滤，见 _claude_prompt_text
@@ -76,8 +77,10 @@ _parse_cache: dict[str, tuple[float, int, _Parsed]] = {}
 
 def scan_sessions(hours_back: int = DEFAULT_HOURS_BACK,
                   max_prompts: int = DEFAULT_MAX_PROMPTS,
-                  agent_ids: set[str] | None = None) -> list[LiveSession]:
-    """窗口期内有动静的会话，按最近活动倒序。agent_ids=None 表示不过滤。"""
+                  agent_ids: set[str] | None = None,
+                  max_sessions: int = DEFAULT_MAX_SESSIONS) -> list[LiveSession]:
+    """窗口期内有动静的会话，按最近活动倒序、最多取前 max_sessions 个。
+    agent_ids=None 表示不过滤。"""
     now = datetime.now(UTC)
     cutoff = now - timedelta(hours=hours_back)
     heartbeat = _read_heartbeat()
@@ -87,7 +90,7 @@ def scan_sessions(hours_back: int = DEFAULT_HOURS_BACK,
     if agent_ids is None or "codex" in agent_ids:
         sessions.extend(_scan_codex_sessions(cutoff, now, heartbeat, max_prompts))
     sessions.sort(key=lambda s: s.last_activity, reverse=True)
-    return sessions
+    return sessions[:max_sessions]
 
 
 def _infer_state(now: datetime, last_activity: datetime,

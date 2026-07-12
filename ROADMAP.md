@@ -113,6 +113,7 @@
 
 ## 最近验证
 
+- **2026-07-12 19:25**：**sidebar 会话量双层控制（主人定）**：窗口 12h → 5h + 新增条数上限 `DEFAULT_MAX_SESSIONS=10`（按最近活动取前 10，不足全显）；同批次修提示词噪音——skip 前缀补 `<task-notification`/`<system-reminder`、过滤降到 text 片段级（注入与真提示词同消息时不误杀）。测试 +3 用例、170 全绿；真实数据冒烟 bwh-proxy 最新条回落真提示词。
 - **2026-07-12 19:05**：**sidebar Textual 壳按主人真终端反馈修三处**：① 配色继承终端--`ansi_color=True` + `ansi-dark/light` 主题（实测 textual 8.2.8 无 1.x 文档里的 `textual-ansi`，对应物是这两个），app chrome 不再糊 Textual 自带深色底，明暗跟随 tt 主题 `is_light`；② 底部加 Footer 显示按键提示；③ 退出键 q / Ctrl+C 之外补 Esc。pytest 169 全绿（pilot 用例加 theme 断言）、ruff/mypy 过。滚动条具体问题待主人重测后描述（若是配色冲突应已随 ① 修复）。
 - **2026-07-12 18:45**：**sidebar live 模式升级 Textual 壳（滚动落地）**。新增 `ui/sidebar_app.py`（App + VerticalScroll + Static 整帧更新，数据层与 Rich 渲染零改动复用）；cli live 路径换 `SidebarApp.run()`，`--once`/非 tty 快照路径不变；依赖 `textual>=1.0`（延迟 import，实测 `import token_tracker.cli` 后 `textual not in sys.modules`、52ms 启动不受影响）+ dev 加 `pytest-asyncio`（`asyncio_mode=auto`）。验证：pytest **169 全绿**（+2 个 pilot 用例：挂载/持焦/q 退出、手动触发刷新不抛异常），ruff/mypy 过，`--once` 冒烟无回归。**真终端待验**：滚轮/方向键滚动手感、Textual 默认深色背景与终端主题的观感。
 - **2026-07-12 18:35**：**sidebar 参数按主人使用反馈调整**：轮询间隔 2s → 5s、每会话提示词 3 → 5 条（`DEFAULT_MAX_PROMPTS`）。pytest 167 全绿、ruff/mypy 过、`--once` 冒烟每会话 5 条正确。

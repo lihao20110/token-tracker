@@ -184,6 +184,20 @@ def test_scan_claude_uses_cache_for_unchanged_file(tmp_path, monkeypatch):
     assert len(_scan_claude_sessions(cutoff, now, None, 3, dirs=[str(base)])) == 1
 
 
+def test_scan_sessions_caps_at_max_sessions(monkeypatch):
+    # 窗口内超过 max_sessions 时按最近活动取前 N；不足 N 全显（切片天然满足）
+    now = datetime.now(UTC)
+    fake = [LiveSession(agent_id="claude-code", session_id=f"s{i}", project=f"p{i}",
+                        last_activity=now - timedelta(minutes=i), state=WAITING,
+                        prompts=[Prompt("x", now)])
+            for i in range(12)]
+    monkeypatch.setattr(sidebar, "_scan_claude_sessions", lambda *a, **k: fake)
+    monkeypatch.setattr(sidebar, "_scan_codex_sessions", lambda *a, **k: [])
+    got = sidebar.scan_sessions()
+    assert len(got) == 10
+    assert [s.session_id for s in got] == [f"s{i}" for i in range(10)]  # 最新的 10 个
+
+
 def test_heartbeat_marks_running(tmp_path):
     base = _make_claude_base(tmp_path)
     d = base / "-Users-x-project-alpha"
