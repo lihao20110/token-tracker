@@ -222,26 +222,22 @@ def test_scan_claude_attaches_terminal(tmp_path):
     assert got[0].terminal == {"iterm": "w0t2p0:CCC"}
 
 
-def test_render_head_click_meta_only_with_terminal():
+def test_render_head_click_meta_targets_app_namespace():
+    # 回归：meta 点击的派发目标默认是被点的 Static，action 必须带 app. 前缀才能到 App；
+    # 无终端定位的会话头行同样可点（action 里 toast 说明），不再静默无反应
     from rich.text import Text
     now = datetime.now(UTC)
-
-    def _mk(terminal):
-        return LiveSession(agent_id="claude-code", session_id="sX", project="p",
-                           last_activity=now, state=WAITING,
-                           prompts=[Prompt("x", now)], terminal=terminal)
-
-    def _has_click(group):
-        for r in group.renderables:
-            if isinstance(r, Text):
-                for span in r.spans:
-                    meta = getattr(span.style, "meta", None)
-                    if meta and "@click" in meta:
-                        return True
-        return False
-
-    assert _has_click(render_sidebar([_mk({"iterm": "w0t0p0:X"})]))
-    assert not _has_click(render_sidebar([_mk({})]))
+    session = LiveSession(agent_id="claude-code", session_id="sX", project="p",
+                          last_activity=now, state=WAITING,
+                          prompts=[Prompt("x", now)], terminal={})
+    actions = []
+    for r in render_sidebar([session]).renderables:
+        if isinstance(r, Text):
+            for span in r.spans:
+                meta = getattr(span.style, "meta", None)
+                if meta and "@click" in meta:
+                    actions.append(meta["@click"])
+    assert actions == ["app.jump_to('sX')"]
 
 
 def test_heartbeat_marks_running(tmp_path):

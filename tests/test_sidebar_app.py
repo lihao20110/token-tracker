@@ -41,6 +41,29 @@ async def test_sidebar_app_boots_renders_and_quits():
     # run_test 正常退出即通过：q 绑定 quit、app 无异常
 
 
+async def test_click_session_head_dispatches_jump(monkeypatch):
+    # 端到端派发链路：鼠标点会话头行 → meta @click → App.action_jump_to 收到 session_id。
+    # 回归：action 不带 app. 前缀时派发到 Static 找不到方法、静默无反应。
+    from datetime import UTC, datetime
+
+    from token_tracker.sidebar import LiveSession, Prompt
+    from token_tracker.ui import sidebar_app as app_module
+
+    fake = [LiveSession(agent_id="claude-code", session_id="s-click", project="proj",
+                        last_activity=datetime.now(UTC), state="waiting",
+                        prompts=[Prompt("提示词", None)], terminal={"iterm": "w0t0p0:X"})]
+    monkeypatch.setattr(app_module, "scan_sessions", lambda **kw: fake)
+    app = SidebarApp(agent_ids=set())
+    called: list[str] = []
+    monkeypatch.setattr(app, "action_jump_to", lambda sid: called.append(sid), raising=False)
+    async with app.run_test(size=(60, 24)) as pilot:
+        await pilot.pause()
+        # 内容行序：0=标题、1=空行、2=会话头行
+        await pilot.click("#sidebar-body", offset=(4, 2))
+        await pilot.pause()
+    assert called == ["s-click"]
+
+
 async def test_sidebar_app_refresh_updates_content():
     app = SidebarApp(agent_ids=set())
     async with app.run_test(size=(60, 24)) as pilot:
