@@ -23,6 +23,8 @@ _STRINGS = {
         "sidebar_active_count": "最近活跃会话 {n} 条",
         "sidebar_tz_bj": "北京",
         "sidebar_tz_la": "洛杉矶",
+        "sidebar_tz_ldn": "伦敦",
+        "sidebar_jump_gone": "目标终端窗格不存在（可能已关闭）",
         # --- status.py（会话表列名与 tips）---
         "recent_sessions": "最近会话",
         "sessions_tips": "Tips: tt sessions <N> 调数量 · --sort cost|tokens|time|messages · --asc/--desc 改排序",
@@ -111,6 +113,8 @@ _STRINGS = {
         "sidebar_active_count": "{n} active sessions",
         "sidebar_tz_bj": "Beijing",
         "sidebar_tz_la": "LA",
+        "sidebar_tz_ldn": "London",
+        "sidebar_jump_gone": "Target terminal pane no longer exists (probably closed)",
         # --- status.py（会话表列名与 tips）---
         "recent_sessions": "Recent Sessions",
         "sessions_tips": "Tips: tt sessions <N> for count · --sort cost|tokens|time|messages · --asc/--desc to sort",

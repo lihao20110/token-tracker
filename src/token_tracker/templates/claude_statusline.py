@@ -378,7 +378,6 @@ def main():
         state[session_id] = {"api": (data.get("cost") or {}).get("total_api_duration_ms"), "tps": tps}
         for k in list(state)[:-20]:
             del state[k]
-        data["_tps_state"] = state
         # 终端定位（tt sidebar 点击跳转用）：statusline 是 CC 子进程，继承会话所在
         # 终端的环境——iTerm2 每窗格注入 ITERM_SESSION_ID、tmux 注入 TMUX_PANE。
         # 按 session_id 并回共享 map（同 _tps_state 的合并/LRU 语义）。
@@ -391,7 +390,10 @@ def main():
         term_map[session_id] = term
         for k in list(term_map)[:-20]:
             del term_map[k]
-        data["_terminal_map"] = term_map
+    # 共享状态**无条件**随帧携带落盘（哪怕本帧无 session_id）——否则一条异常帧
+    # 就会把别的会话攒的 TPS 状态与终端映射整个清掉（曾被无 session_id 的测试帧清表）
+    data["_tps_state"] = state
+    data["_terminal_map"] = term_map
     save_data(data, now)
     render(data, now, tps)
 

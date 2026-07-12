@@ -50,8 +50,11 @@ def _run_statusline(script_path, project_dir):
         "context_window": {"used_percentage": 30, "context_window_size": 200000,
                            "total_input_tokens": 100, "total_output_tokens": 50},
     }
+    # HOME 重定向到脚本所在临时目录：脚本会 save_data 到 ~/.config/token-tracker/tt-status.json，
+    # 不隔离会把真实文件覆盖成无 session_id 的测试帧（曾把 _tps_state/_terminal_map 反复清空）
+    env = dict(os.environ, HOME=os.path.dirname(str(script_path)))
     r = subprocess.run([sys.executable, str(script_path)], input=json.dumps(data),
-                       text=True, capture_output=True)
+                       text=True, capture_output=True, env=env)
     return r.stdout.splitlines()[0] if r.stdout.strip() else ""
 
 
@@ -83,10 +86,14 @@ def test_statusline_records_terminal_map(tmp_path):
     _run("sess-a")
     env["ITERM_SESSION_ID"] = "w0t2p0:BBB-222"
     _run("sess-b")
-    status = json.loads((tmp_path / ".config" / "token-tracker" / "tt-status.json").read_text())
-    tmap = status["_terminal_map"]
+    status_path = tmp_path / ".config" / "token-tracker" / "tt-status.json"
+    tmap = json.loads(status_path.read_text())["_terminal_map"]
     assert tmap["sess-a"] == {"iterm": "w0t1p0:AAA-111", "tmux": "%7"}  # 第二帧未清掉第一帧
     assert tmap["sess-b"] == {"iterm": "w0t2p0:BBB-222", "tmux": "%7"}
+    # 回归（2.1）：无 session_id 的异常帧不得清掉共享状态（曾被这类帧反复清表）
+    _run("")
+    tmap = json.loads(status_path.read_text())["_terminal_map"]
+    assert set(tmap) == {"sess-a", "sess-b"}
 
 
 def test_installed_version_parser_roundtrips(tmp_path, monkeypatch):

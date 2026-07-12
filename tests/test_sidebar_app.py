@@ -19,6 +19,8 @@ def test_jump_argvs_iterm_extracts_uuid():
     argvs = _jump_argvs({"iterm": "w0t3p0:1A2B-3C4D"})
     assert len(argvs) == 1 and argvs[0][0] == "osascript"
     assert 'if id of s is "1A2B-3C4D"' in argvs[0][2]
+    # 回归：未匹配到目标窗格必须以 error 结束，否则 rc=0 静默、用户看到「点了没反应」
+    assert "tt_jump_target_gone" in argvs[0][2]
 
 
 def test_jump_argvs_none_without_target():
@@ -62,8 +64,8 @@ async def test_click_session_head_dispatches_jump(monkeypatch):
     monkeypatch.setattr(app, "action_jump_to", lambda sid: called.append(sid), raising=False)
     async with app.run_test(size=(60, 24)) as pilot:
         await pilot.pause()
-        # 内容行序：0=标题、1/2=北京/洛杉矶时钟、3=空行、4=会话头行
-        await pilot.click("#sidebar-body", offset=(4, 4))
+        # 内容行序：0=标题、1/2/3=北京/洛杉矶/伦敦时钟、4=空行、5=会话头行
+        await pilot.click("#sidebar-body", offset=(4, 5))
         await pilot.pause()
     assert called == ["s-click"]
 

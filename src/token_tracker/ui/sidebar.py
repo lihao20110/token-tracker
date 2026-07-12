@@ -17,8 +17,11 @@ from ..sidebar import ATTENTION, IDLE, RUNNING, WAITING, LiveSession
 from .format import AGENT_SHORT, _model_short
 from .theme import _S
 
-# 头部双时区时钟（主人常驻北京、CLI 伪装 TZ=洛杉矶，两个都显式标出、不受 TZ 环境变量影响）
-_CLOCK_ZONES = (("sidebar_tz_bj", "Asia/Shanghai"), ("sidebar_tz_la", "America/Los_Angeles"))
+# 头部时区时钟（显式 ZoneInfo，不受 TZ 环境变量影响）：北京=主人常驻、
+# 洛杉矶=OpenAI/Anthropic 等湾区实验室、伦敦=DeepMind + 欧洲 AI 圈（巴黎仅差 1h）
+_CLOCK_ZONES = (("sidebar_tz_bj", "Asia/Shanghai"),
+                ("sidebar_tz_la", "America/Los_Angeles"),
+                ("sidebar_tz_ldn", "Europe/London"))
 
 _STATE_DOTS = {RUNNING: "●", ATTENTION: "●", WAITING: "●", IDLE: "○"}
 # 运行中的动画帧（CC 同款星形轮转）；spinner_frame 由 Textual 壳的动画 tick 递增
@@ -174,16 +177,18 @@ def render_sidebar(sessions: list[LiveSession], spinner_frame: int = 0) -> Group
         dot = (_SPINNER[spinner_frame % len(_SPINNER)] if s.state == RUNNING
                else _STATE_DOTS.get(s.state, "●"))
         head.append(dot + " ", style=_state_style(s.state))
-        head.append(s.project, style="bold")
+        # 链接语义与外观统一（主人定）：有终端定位=可跳转，项目名固定蓝色下划线标记；
+        # 无定位（codex / 映射未建）=普通样式且不可点，所见即所得
+        head.append(s.project, style=f"bold underline {_S.blue}" if s.terminal else "bold")
         head.append(f" · {AGENT_SHORT.get(s.agent_id, s.agent_id)}", style=_S.blue)
         if s.model:
             head.append(f" · {_model_short(s.model)}", style=_S.dim)
         head.append(f" · {_fmt_ago(now, s.last_activity)}", style=_S.dim)
         head.append(f"  {t('sidebar_state_' + s.state)}", style=_state_style(s.state))
-        # 会话头行一律可点（Textual 派发到 App.action_jump_to；--once 纯 Rich 路径 meta 无害）。
-        # 必须带 app. 命名空间前缀——meta 点击的默认派发目标是被点的 Static，不带前缀会静默失败。
-        # 无终端定位的会话点击后由 action 弹 toast 说明，好过无声无息。
-        head.apply_meta({"@click": f"app.jump_to('{s.session_id}')"})
+        if s.terminal:
+            # Textual 派发到 App.action_jump_to；必须带 app. 命名空间前缀——meta 点击的
+            # 默认派发目标是被点的 Static，不带前缀会静默失败。--once 纯 Rich 路径 meta 无害
+            head.apply_meta({"@click": f"app.jump_to('{s.session_id}')"})
         lines.append(head)
         for i, p in enumerate(s.prompts):
             last = i == len(s.prompts) - 1

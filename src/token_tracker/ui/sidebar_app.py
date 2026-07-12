@@ -23,7 +23,8 @@ from .sidebar import render_sidebar
 from .themes import get_theme
 
 REFRESH_SECONDS = 5.0
-SPINNER_SECONDS = 0.5  # 运行中动画帧间隔——只用缓存会话重绘，不触发磁盘扫描
+SPINNER_SECONDS = 0.5  # 动画/时钟帧间隔——只用缓存会话重绘，不触发磁盘扫描
+_TARGET_GONE_MARKER = "tt_jump_target_gone"  # AppleScript 未匹配到目标窗格的信号（tab 已关闭）
 
 
 def _jump_argvs(info: dict) -> list[list[str]] | None:
@@ -39,6 +40,8 @@ def _jump_argvs(info: dict) -> list[list[str]] | None:
         return [["tmux", "select-window", "-t", pane], ["tmux", "select-pane", "-t", pane]]
     if info.get("iterm"):
         uuid = info["iterm"].rpartition(":")[2]
+        # 找不到目标 session 时必须以 error 结束——否则 osascript 静默 rc=0、
+        # 用户看到的是「点了没反应」（目标 tab 已关闭是常见场景）
         script = f'''
         tell application "iTerm2"
             repeat with w in windows
@@ -54,7 +57,8 @@ def _jump_argvs(info: dict) -> list[list[str]] | None:
                     end repeat
                 end repeat
             end repeat
-        end tell'''
+        end tell
+        error "{_TARGET_GONE_MARKER}"'''
         return [["osascript", "-e", script]]
     return None
 
@@ -148,7 +152,12 @@ class SidebarApp(App[None]):
                                       severity="error", timeout=4)
                 return
             if proc.returncode != 0:
-                err = (proc.stderr or "").strip()[:80] or f"exit {proc.returncode}"
+                stderr = (proc.stderr or "").strip()
+                if _TARGET_GONE_MARKER in stderr:  # 映射还在、窗格已关（换成友好话术）
+                    self.call_from_thread(self.notify, t("sidebar_jump_gone"),
+                                          severity="warning", timeout=4)
+                    return
+                err = stderr[:80] or f"exit {proc.returncode}"
                 self.call_from_thread(self.notify, t("sidebar_jump_failed", err=err),
                                       severity="error", timeout=4)
                 return

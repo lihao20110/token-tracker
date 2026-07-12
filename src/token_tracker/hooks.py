@@ -38,7 +38,7 @@ CODEX_DIR = _CODEX
 CODEX_CONFIG = os.path.join(CODEX_DIR, "config.toml")     # 改 Codex 配置，留 agent 目录
 CODEX_STATUSLINE_HOOK_PATH = os.path.join(_TT, "codex-statusline.py")
 STATUS_FILE = config.STATUS_FILE                          # CC statusline 缓存（单一权威定义在 config）
-HOOK_VERSION = "2.0"  # 2.0: statusline 采集 _terminal_map（ITERM_SESSION_ID/TMUX_PANE，sidebar 点击跳转用）
+HOOK_VERSION = "2.1"  # 2.0: 采集 _terminal_map（sidebar 点击跳转）；2.1: 共享状态无条件随帧携带、防异常帧清表
 STATUSLINE_HOOK_VERSION = "1.1"
 
 CC_BACKUP_PATH = os.path.join(_TT, "cc-backup.json")

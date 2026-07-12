@@ -230,22 +230,35 @@ def test_scan_claude_attaches_terminal(tmp_path):
     assert got[0].terminal == {"iterm": "w0t2p0:CCC"}
 
 
-def test_render_head_click_meta_targets_app_namespace():
-    # 回归：meta 点击的派发目标默认是被点的 Static，action 必须带 app. 前缀才能到 App；
-    # 无终端定位的会话头行同样可点（action 里 toast 说明），不再静默无反应
+def test_render_head_click_meta_and_link_style():
+    # 链接语义统一：有终端定位=可点（meta 带 app. 前缀防派发到 Static 静默失败）
+    # 且项目名带蓝色下划线标记；无定位=无 meta 无链接样式，所见即所得
     from rich.text import Text
+
+    def _collect(session):
+        actions, underlined = [], False
+        for r in render_sidebar([session]).renderables:
+            if isinstance(r, Text):
+                for span in r.spans:
+                    meta = getattr(span.style, "meta", None)
+                    if meta and "@click" in meta:
+                        actions.append(meta["@click"])
+                    if isinstance(span.style, str) and "underline" in span.style:
+                        underlined = True
+        return actions, underlined
+
     now = datetime.now(UTC)
-    session = LiveSession(agent_id="claude-code", session_id="sX", project="p",
-                          last_activity=now, state=WAITING,
-                          prompts=[Prompt("x", now)], terminal={})
-    actions = []
-    for r in render_sidebar([session]).renderables:
-        if isinstance(r, Text):
-            for span in r.spans:
-                meta = getattr(span.style, "meta", None)
-                if meta and "@click" in meta:
-                    actions.append(meta["@click"])
+    mapped = LiveSession(agent_id="claude-code", session_id="sX", project="p",
+                         last_activity=now, state=WAITING,
+                         prompts=[Prompt("x", now)], terminal={"iterm": "w0t0p0:X"})
+    actions, underlined = _collect(mapped)
     assert actions == ["app.jump_to('sX')"]
+    assert underlined
+    unmapped = LiveSession(agent_id="claude-code", session_id="sY", project="p",
+                           last_activity=now, state=WAITING,
+                           prompts=[Prompt("x", now)], terminal={})
+    actions, underlined = _collect(unmapped)
+    assert actions == [] and not underlined
 
 
 def test_heartbeat_marks_running(tmp_path):
@@ -472,13 +485,11 @@ def test_render_header_count_and_dual_clocks():
     out = console.export_text().splitlines()
     assert "3" in out[0]  # 活跃会话计数在标题行
     clock_lines = [ln for ln in out if _re.search(r"\d{2}:\d{2}:\d{2}", ln)]
-    assert len(clock_lines) == 2  # 北京 + 洛杉矶两行时钟
-    bj = datetime.now(ZoneInfo("Asia/Shanghai"))
-    la = datetime.now(ZoneInfo("America/Los_Angeles"))
-    assert bj.strftime("%m-%d") in clock_lines[0]
-    assert la.strftime("%m-%d") in clock_lines[1]
-    assert bj.strftime("%H:%M") in clock_lines[0]  # 秒可能跨帧，比对到分钟
-    assert la.strftime("%H:%M") in clock_lines[1]
+    assert len(clock_lines) == 3  # 北京 + 洛杉矶 + 伦敦三行时钟
+    for i, tz_name in enumerate(("Asia/Shanghai", "America/Los_Angeles", "Europe/London")):
+        local = datetime.now(ZoneInfo(tz_name))
+        assert local.strftime("%m-%d") in clock_lines[i]
+        assert local.strftime("%H:%M") in clock_lines[i]  # 秒可能跨帧，比对到分钟
 
 
 def test_render_sidebar_empty():
