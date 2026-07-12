@@ -59,10 +59,14 @@ def test_claude_prompt_extraction_filters_noise(tmp_path):
         _u("子代理里的任务描述", isSidechain=True),
         _u("[Image: source: /tmp/x.png]", isMeta=True),
         _u("[Request interrupted by user for tool use]"),
+        _u("<task-notification> <task-id>a36fa19b</task-id> 后台任务完成通知"),
+        # 注入片段与真提示词同消息：只丢噪音片段、保留真提示词
+        _u([{"type": "text", "text": "<system-reminder>召回的记忆背景</system-reminder>"},
+            {"type": "text", "text": "混合消息里的真提示词"}]),
     ]
     parsed = _parse_claude(_write_jsonl(tmp_path / "s-abc.jsonl", rows), "fallback", 5)
     assert parsed is not None
-    assert [p.text for p in parsed.prompts] == ["真提示词一", "带图提示词"]
+    assert [p.text for p in parsed.prompts] == ["真提示词一", "带图提示词", "混合消息里的真提示词"]
     assert parsed.session_id == "s-abc"
     assert parsed.prompts[0].timestamp is not None
 

@@ -33,8 +33,10 @@ IDLE_AFTER_S = 30 * 60      # 多久无动静降级为 idle
 DEFAULT_HOURS_BACK = 12     # 只看窗口期内有动静的会话
 DEFAULT_MAX_PROMPTS = 5     # 每会话保留最近 N 条提示词
 
-# CC 里非「人敲的提示词」的 user 行前缀（slash command 记录 / 本地命令回显 / 中断标记）
-_CLAUDE_SKIP_PREFIXES = ("<command-", "<local-command-", "[Request interrupted")
+# CC 里非「人敲的提示词」的内容前缀（slash command 记录 / 本地命令回显 / 中断标记 /
+# 后台任务通知 / harness 注入的 system-reminder）——按文本片段级过滤，见 _claude_prompt_text
+_CLAUDE_SKIP_PREFIXES = ("<command-", "<local-command-", "[Request interrupted",
+                         "<task-notification", "<system-reminder")
 # Codex 里包装成 user_message 的注入内容（用户指令模板 / 环境上下文等）
 _CODEX_SKIP_PREFIXES = ("<user_instructions", "<environment_context", "<ide_", "<permissions", "<turn_")
 
@@ -237,18 +239,23 @@ def _is_tool_result(content: object) -> bool:
 
 
 def _claude_prompt_text(content: object) -> str | None:
-    """user 行 content → 提示词文本；不是人敲的（命令记录 / 空内容）返回 None。"""
+    """user 行 content → 提示词文本；不是人敲的（命令记录 / 注入通知 / 空内容）返回 None。
+
+    过滤按**文本片段级**做：注入内容（task-notification / system-reminder）可能与
+    真提示词同处一条消息的不同 text 块，逐片段判前缀、只丢噪音片段，避免误杀真提示词。
+    """
     if isinstance(content, str):
-        text = content.strip()
+        parts = [content]
     elif isinstance(content, list):
         parts = [i.get("text", "") for i in content
                  if isinstance(i, dict) and i.get("type") == "text"]
-        text = "\n".join(p for p in parts if p).strip()
     else:
         return None
-    if not text or text.startswith(_CLAUDE_SKIP_PREFIXES):
+    kept = [p.strip() for p in parts
+            if p.strip() and not p.strip().startswith(_CLAUDE_SKIP_PREFIXES)]
+    if not kept:
         return None
-    return text
+    return "\n".join(kept)
 
 
 # --- Codex ---
