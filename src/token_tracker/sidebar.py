@@ -223,6 +223,7 @@ def _parse_claude(path: Path, fallback_project: str, max_prompts: int) -> _Parse
     pending_tool = False
     model = ""
     last_reply = ""
+    pending_question = ""  # 待回答的 AskUserQuestion（任何后续用户动作即视为不再待决）
     for data in iter_jsonl_dicts(path):
         if data.get("isSidechain"):  # 子代理 sidechain 的消息不是主人敲的提示词
             continue
@@ -239,6 +240,7 @@ def _parse_claude(path: Path, fallback_project: str, max_prompts: int) -> _Parse
             message = data.get("message")
             if not isinstance(message, dict):
                 continue
+            pending_question = ""  # 回答/新提示/打断，提问已被消费
             content = message.get("content")
             if _is_tool_result(content):
                 pending_tool = False
@@ -257,6 +259,11 @@ def _parse_claude(path: Path, fallback_project: str, max_prompts: int) -> _Parse
             reply = ""
             if isinstance(content, list):
                 pending_tool = any(isinstance(i, dict) and i.get("type") == "tool_use" for i in content)
+                for item in content:
+                    if (isinstance(item, dict) and item.get("type") == "tool_use"
+                            and item.get("name") == "AskUserQuestion"):
+                        q = _format_question(item.get("input") or {})
+                        pending_question = q or pending_question
                 parts = [i.get("text", "") for i in content
                          if isinstance(i, dict) and i.get("type") == "text"]
                 reply = "\n".join(p for p in parts if p)
@@ -267,8 +274,9 @@ def _parse_claude(path: Path, fallback_project: str, max_prompts: int) -> _Parse
                 last_reply = reply
     if not prompts:
         return None
+    # 「下一步」优先级链：结构化提问（待回答，零猜测）> 句子打分精简 > 末行兜底
     return _Parsed(session_id, project, prompts[-max_prompts:], pending_tool, model,
-                   next_hint=_hint_text(last_reply))
+                   next_hint=pending_question or _hint_text(last_reply))
 
 
 def _is_tool_result(content: object) -> bool:
@@ -376,13 +384,20 @@ def _parse_codex(path: Path, max_prompts: int) -> _Parsed | None:
                    next_hint=_hint_text(last_reply))
 
 
-_HINT_MAX_LINES = 5  # 「下一步」最多保留回复末尾 N 个有效行（渲染层逐行显示、超宽单行截断）
+_HINT_MAX_LINES = 5   # 「下一步」显示上限（AskUserQuestion 格式化路径用；打分路径上限 3）
+_HINT_PICK_LINES = 3  # 句子打分路径最多保留 N 个正分句
+
+# 句子打分词表（确定性规则，随用随补）：命中行动/征询词加分，纯完成陈述减分
+_ACTION_WORDS = ("要我", "需要我", "是否", "说一声", "确认", "建议", "重启", "验证", "跑一下",
+                 "你来定", "等你", "接下来", "下一步", "要不要", "可以选", "告诉我", "试试",
+                 "生效", "开工", "动手", "选一个", "定一个", "待你", "看看")
+_DONE_WORDS = ("已提交", "已完成", "完成了", "全绿", "修好", "已合并", "已更新", "已修复", "通过", "落地")
+_OPTION_RE = re.compile(r"^(\d+[.、)]|[-•·]|[A-Da-d][.、)])\s*")
+_SENT_SPLIT_RE = re.compile(r"[^。！？；!?;]+[。！？；!?;]?")
 
 
-def _hint_text(reply: str, max_lines: int = _HINT_MAX_LINES, line_limit: int = 160) -> str:
-    """回复尾部的「下一步」内容：保留原始行结构逐行取，压缩整理——
-    剔除代码块内容与围栏、分隔线、表格行、空行，去掉标题井号与粗体星号，
-    每行限长后取末尾至多 max_lines 行（收尾几行通常正是建议/追问）。"""
+def _clean_reply_lines(reply: str, line_limit: int = 160) -> list[str]:
+    """回复正文降噪：剔代码块与围栏、分隔线、表格行、空行，剥标题井号与粗体星号，每行限长。"""
     kept: list[str] = []
     in_code = False
     for raw in reply.splitlines():
@@ -396,7 +411,60 @@ def _hint_text(reply: str, max_lines: int = _HINT_MAX_LINES, line_limit: int = 1
             continue
         ln = re.sub(r"^#{1,6}\s+", "", ln).replace("**", "")
         kept.append(ln[:line_limit])
-    return "\n".join(kept[-max_lines:])
+    return kept
+
+
+def _score(sent: str) -> int:
+    """「下一步」信号分：问句 +3、行动/征询词 +2、纯完成陈述 -2。纯规则，无模型。"""
+    s = 0
+    body = sent.rstrip("。；;.")
+    if body.endswith(("？", "?", "吗", "么", "呢")):
+        s += 3
+    if any(w in sent for w in _ACTION_WORDS):
+        s += 2
+    if any(w in sent for w in _DONE_WORDS) and "？" not in sent and "?" not in sent:
+        s -= 2
+    return s
+
+
+def _hint_text(reply: str) -> str:
+    """句子打分精简：切句后取正分句（问句/建议/选项行）按原顺序保留末尾至多
+    _HINT_PICK_LINES 个；全无信号（纯汇报）回退最后一个有效行。"""
+    cleaned = _clean_reply_lines(reply)
+    if not cleaned:
+        return ""
+    picked: list[str] = []
+    for ln in cleaned:
+        if _OPTION_RE.match(ln):  # 选项/列表行保持原样不切句；完成陈述类列表被减分排除
+            if _score(ln) >= 0:
+                picked.append(ln)
+            continue
+        for match in _SENT_SPLIT_RE.findall(ln):
+            sent = match.strip()
+            if sent and _score(sent) > 0:
+                picked.append(sent)
+    if picked:
+        return "\n".join(picked[-_HINT_PICK_LINES:])
+    return cleaned[-1]
+
+
+def _format_question(tool_input: dict) -> str:
+    """AskUserQuestion 的结构化提问 → 「下一步」文本：问题一行 + 选项一行（· A / B / C）。"""
+    lines: list[str] = []
+    questions = tool_input.get("questions")
+    if not isinstance(questions, list):
+        return ""
+    for q in questions[:2]:
+        if not isinstance(q, dict):
+            continue
+        text = (q.get("question") or "").strip()
+        if text:
+            lines.append(text[:160])
+        opts = " / ".join((o.get("label") or "").strip()
+                          for o in (q.get("options") or []) if isinstance(o, dict))
+        if opts:
+            lines.append(("· " + opts)[:160])
+    return "\n".join(lines[:_HINT_MAX_LINES])
 
 
 def _parse_ts(raw: object) -> datetime | None:

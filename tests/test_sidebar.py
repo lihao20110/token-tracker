@@ -319,8 +319,8 @@ def test_render_prompt_short_stays_single_line():
     assert "…" not in body_lines[0]
 
 
-def test_next_hint_from_last_assistant_reply(tmp_path):
-    # 「下一步」= 末条 assistant 回复尾部的有效行（逐行保留结构）；后续新回复覆盖旧的
+def test_next_hint_scores_action_over_narrative(tmp_path):
+    # 「下一步」= 打分精简：完成陈述被滤掉，行动/征询句保留；后续新回复覆盖旧的
     rows = [
         _u("改一下"),
         _a("改好了。\n\n要我继续做 B 么"),
@@ -328,26 +328,48 @@ def test_next_hint_from_last_assistant_reply(tmp_path):
         _a([{"type": "text", "text": "B 也完成。\n验证后我们再发版"}]),
     ]
     parsed = _parse_claude(_write_jsonl(tmp_path / "s.jsonl", rows), "p", 5)
-    assert parsed.next_hint == "B 也完成。\n验证后我们再发版"
+    assert parsed.next_hint == "验证后我们再发版"
 
 
-def test_hint_text_compresses_noise_and_caps_lines():
+def test_hint_text_scoring_and_noise_filter():
     from token_tracker.sidebar import _hint_text
     reply = "\n".join([
-        "## 结论",                       # 标题井号剥掉
-        "第一行说明",
+        "## 结论",
+        "细节修改已提交（abc123）。",     # 完成陈述 → 滤掉
         "```python",                     # 代码块整段剔除
         "print('hi')",
         "```",
         "---",                           # 分隔线剔除
         "| a | b |",                     # 表格行剔除
-        "**加粗的建议**",                 # 粗体星号剥掉
-        "行 A", "行 B", "行 C", "行 D",
+        "**加粗的建议**",                 # 粗体星号剥掉 + 「建议」行动词保留
+        "重启侧边栏生效。要不要我继续做 B？",  # 切句：两句都是正分
     ])
     got = _hint_text(reply)
-    # 6 个有效行取末尾 5 行（「第一行说明」被挤出）
-    assert got.splitlines() == ["加粗的建议", "行 A", "行 B", "行 C", "行 D"]
-    assert "print" not in got and "---" not in got and "##" not in got and "**" not in got
+    assert got.splitlines() == ["加粗的建议", "重启侧边栏生效。", "要不要我继续做 B？"]
+    assert "已提交" not in got and "print" not in got and "##" not in got and "**" not in got
+
+
+def test_hint_text_falls_back_to_last_line():
+    from token_tracker.sidebar import _hint_text
+    # 纯汇报无任何行动信号 → 回退最后一个有效行（单行，精简）
+    assert _hint_text("统计口径核对完毕。\n数字与后台一致。") == "数字与后台一致。"
+
+
+def test_ask_user_question_takes_priority(tmp_path):
+    # 待回答的 AskUserQuestion（结构化字段，零猜测）优先于文本打分
+    ask = [{"type": "tool_use", "id": "t1", "name": "AskUserQuestion",
+            "input": {"questions": [{"question": "范围选哪个？", "header": "范围",
+                                     "options": [{"label": "只做方向一"}, {"label": "一二连做"}],
+                                     "multiSelect": False}]}}]
+    rows = [_u("开工"), _a("我先确认范围。建议尽快定。"), _a(ask)]
+    parsed = _parse_claude(_write_jsonl(tmp_path / "a.jsonl", rows), "p", 5)
+    assert parsed.next_hint == "范围选哪个？\n· 只做方向一 / 一二连做"
+    # 用户回答（tool_result）后提问被消费 → 回落文本打分
+    rows += [_u([{"type": "tool_result", "tool_use_id": "t1", "content": "只做方向一"}]),
+             _a("好，方向一开工。做完说一声。")]
+    parsed = _parse_claude(_write_jsonl(tmp_path / "b.jsonl", rows), "p", 5)
+    assert "范围选哪个" not in parsed.next_hint
+    assert parsed.next_hint.splitlines()[-1] == "做完说一声。"  # 「开工」也是行动词，前一句保留属合理
 
 
 def test_codex_next_hint_from_agent_message(tmp_path):
@@ -360,7 +382,7 @@ def test_codex_next_hint_from_agent_message(tmp_path):
          "payload": {"type": "agent_message", "message": "完成了。\n需要我补测试吗"}},
     ]
     parsed = _parse_codex(_write_jsonl(tmp_path / "r.jsonl", rows), 5)
-    assert parsed.next_hint == "完成了。\n需要我补测试吗"
+    assert parsed.next_hint == "需要我补测试吗"
 
 
 def test_render_next_hint_and_spinner_frame():
