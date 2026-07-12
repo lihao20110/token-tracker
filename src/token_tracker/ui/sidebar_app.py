@@ -11,6 +11,7 @@
 
 import subprocess
 
+from rich.style import Style as RichStyle
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.widgets import Footer, Static
@@ -57,6 +58,23 @@ def _jump_argvs(info: dict) -> list[list[str]] | None:
     return None
 
 
+class _SidebarBody(Static):
+    """会话面板：默认不渲染链接样式（可点行与普通文本无异），hover 到才显示下划线。
+
+    CSS 表达不了「默认继承行内原配色」——link-color 一旦有值就整体盖掉行内样式，
+    故覆写两个 property：link_style 返回空样式（渲染路径 `if link_style:` 短路、零改动），
+    link_style_hover 只加下划线（hover 时按 link_id 只作用于鼠标下那一个链接）。
+    """
+
+    @property
+    def link_style(self) -> RichStyle:
+        return RichStyle()
+
+    @property
+    def link_style_hover(self) -> RichStyle:
+        return RichStyle(underline=True)
+
+
 class SidebarApp(App[None]):
     BINDINGS = [
         ("q", "quit", "退出"),
@@ -81,7 +99,7 @@ class SidebarApp(App[None]):
 
     def compose(self) -> ComposeResult:
         with VerticalScroll():
-            yield Static(render_sidebar(scan_sessions(agent_ids=self._agent_ids)), id="sidebar-body")
+            yield _SidebarBody(render_sidebar(scan_sessions(agent_ids=self._agent_ids)), id="sidebar-body")
         yield Footer()
 
     def on_mount(self) -> None:
