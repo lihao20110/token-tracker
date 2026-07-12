@@ -33,7 +33,8 @@ class SidebarApp(App[None]):
     /* 滚动只发生在 VerticalScroll 一层；Screen 禁滚，杜绝 resize 瞬间冒出第二条
        （Screen 默认滚动条宽 2 格）叠在容器滚动条旁边 */
     Screen { overflow-x: hidden; overflow-y: hidden; }
-    VerticalScroll { scrollbar-size: 1 1; }
+    /* 滚动条隐藏（主人定）：滚轮/方向键/PgUp 照常滚，只是不画位置指示条 */
+    VerticalScroll { scrollbar-size: 0 0; }
     #sidebar-body { width: 1fr; }
     """
 
@@ -49,18 +50,8 @@ class SidebarApp(App[None]):
 
     def on_mount(self) -> None:
         # chrome 配色映射到终端 ANSI 调色板；明暗跟随 tt 主题
-        theme = get_theme(config.resolve_theme())
-        self.theme = "ansi-light" if theme.get("is_light") else "ansi-dark"
-        scroll = self.query_one(VerticalScroll)
-        # 滚动条去存在感：拇指用 tt 主题 dim 灰、轨道透明融入终端背景，hover/拖动才提亮
-        base = theme["base"]
-        scroll.styles.scrollbar_color = base["overlay0"]
-        scroll.styles.scrollbar_color_hover = base["blue"]
-        scroll.styles.scrollbar_color_active = base["blue"]
-        scroll.styles.scrollbar_background = "transparent"
-        scroll.styles.scrollbar_background_hover = "transparent"
-        scroll.styles.scrollbar_background_active = "transparent"
-        scroll.focus()  # 容器持焦点，方向键/PgUp/PgDn 直接滚
+        self.theme = "ansi-light" if get_theme(config.resolve_theme()).get("is_light") else "ansi-dark"
+        self.query_one(VerticalScroll).focus()  # 容器持焦点，方向键/PgUp/PgDn 直接滚
         self.set_interval(REFRESH_SECONDS, self._refresh)
 
     def _refresh(self) -> None:
