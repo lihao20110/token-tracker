@@ -7,7 +7,7 @@
 
 from datetime import UTC, datetime
 
-from rich.cells import chop_cells
+from rich.cells import cell_len, chop_cells
 from rich.console import Console, ConsoleOptions, Group, RenderResult
 from rich.text import Text
 
@@ -41,9 +41,56 @@ def _fmt_ago(now: datetime, ts: datetime) -> str:
 
 
 def _one_line(text: str, limit: int = 300) -> str:
-    """提示词压成单行（换行折叠成空格），粗剪到 limit 字符，精细折行/截断交给 _PromptText。"""
+    """提示词压成单行（换行折叠成空格），粗剪到 limit 字符，精细折行/截断交给 _WrappedLine。"""
     flat = " ".join(text.split())
     return flat[:limit]
+
+
+def _fold(text: str, width: int) -> list[str]:
+    """CJK 感知折行：宽字符（中文等）逐字可折、填满换行；窄字符连成的英文单词是
+    原子 token——放不下就整个挪下一行，仅当单词比整行还长（长 URL 等）才按格硬切。
+    Rich 词折行会把空格后的整段中文当一个词（提前断行留白）、chop_cells 会拦腰切
+    英文单词，两者都不合适，故自写。"""
+    tokens: list[str] = []
+    word = ""
+    for ch in text:
+        if ch.isspace():
+            if word:
+                tokens.append(word)
+                word = ""
+            tokens.append(" ")
+        elif cell_len(ch) > 1:
+            if word:
+                tokens.append(word)
+                word = ""
+            tokens.append(ch)
+        else:
+            word += ch
+    if word:
+        tokens.append(word)
+
+    lines: list[str] = []
+    cur, cur_w = "", 0
+    for tok in tokens:
+        w = cell_len(tok)
+        if tok == " ":
+            if cur_w == 0 or cur_w + 1 > width:  # 行首/行尾空格丢弃
+                continue
+            cur, cur_w = cur + " ", cur_w + 1
+        elif cur_w + w <= width:
+            cur, cur_w = cur + tok, cur_w + w
+        elif w <= width:  # 整个 token 挪下一行
+            lines.append(cur.rstrip())
+            cur, cur_w = tok, w
+        else:  # 单 token 超过整行宽：按格硬切
+            if cur_w:
+                lines.append(cur.rstrip())
+            *full, cur = chop_cells(tok, width)
+            lines.extend(full)
+            cur_w = cell_len(cur)
+    if cur.rstrip() or not lines:
+        lines.append(cur.rstrip())
+    return lines
 
 
 class _WrappedLine:
@@ -68,9 +115,7 @@ class _WrappedLine:
         prefix_width = self.first.cell_len
         cont = self.cont if self.cont is not None else Text(" " * prefix_width)
         avail = max(10, options.max_width - prefix_width - _RIGHT_PAD)
-        # 按字符格硬折（chop_cells），不按词断行——Rich 词折行在中英混排时会把空格后的
-        # 整段中文当一个词整体挪下一行，导致截断的省略号出现在断词点、行尾大片留白
-        pieces = chop_cells(self.text, avail)
+        pieces = _fold(self.text, avail)
         kept = pieces[:self.max_lines]
         truncated = len(pieces) > self.max_lines
         for i, piece in enumerate(kept):

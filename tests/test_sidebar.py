@@ -398,6 +398,21 @@ def test_render_hint_line_by_line_hanging_indent():
     assert all(len(ln.rstrip()) <= 40 - 2 for ln in hint_lines)  # 右侧留白 2 格
 
 
+def test_fold_cjk_fills_and_ascii_word_atomic():
+    from rich.cells import cell_len
+
+    from token_tracker.ui.sidebar import _fold
+    # CJK 逐字可折、填满换行
+    assert _fold("中" * 10, 8) == ["中中中中", "中中中中", "中中"]
+    # 英文单词是原子 token：放不下整个挪下一行，不拦腰切
+    got = _fold("中中中中 provider 之后", 10)
+    assert any(ln == "provider" or ln.startswith("provider") for ln in got)
+    assert all("provide" not in ln or "provider" in ln for ln in got)  # 没有被切成 provide/r
+    # 单 token 超过整行宽（长 URL）：按格硬切兜底
+    got = _fold("https://example.com/very/long/path", 10)
+    assert len(got) > 1 and all(cell_len(ln) <= 10 for ln in got)
+
+
 def test_render_mixed_cjk_ascii_fills_width():
     # 回归：Rich 词折行把空格后的整段中文当一个词挪下行，单行截断的省略号
     # 出现在断词点、右侧大片留白；硬折后每行应填满可用宽度再截断
