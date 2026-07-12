@@ -19,7 +19,7 @@ from .theme import _S
 _STATE_DOTS = {RUNNING: "●", ATTENTION: "●", WAITING: "●", IDLE: "○"}
 
 _PROMPT_MAX_LINES = 2  # 每条提示词最多折 N 行，超出末行省略号
-_PREFIX_WIDTH = 4      # 左侧前缀「  └ 」/「  │ 」占 4 格
+_PREFIX_WIDTH = 2      # 树枝前缀「├ 」/「└ 」/「│ 」占 2 格，与头行的 ● 同列成树
 _RIGHT_PAD = 2         # 正文右侧留白，折行不顶到窗格右缘
 
 
@@ -47,14 +47,16 @@ def _one_line(text: str, limit: int = 300) -> str:
 class _PromptText:
     """单条提示词：渲染期按实际宽度折行，最多 _PROMPT_MAX_LINES 行、超出末行加省略号。
 
-    首行带树枝符（└/│）；续行在「│」条目下延续竖线保持轨道连贯、「└」条目下留空。
+    树状语义：每条提示词首行一个分支符（├，末条 └）——数分支即数提示词；
+    折行的续行用 │ 延续轨道（末条的续行留空对齐），与「新的一条」肉眼可分。
     宽度在 __rich_console__ 里才拿得到，故做成 renderable 而非预构建 Text——
     Rich 快照（--once）与 Textual Static 两个渲染路径通用。
     """
 
-    def __init__(self, text: str, rail: str, style: str) -> None:
+    def __init__(self, text: str, branch: str, cont: str, style: str) -> None:
         self.text = text
-        self.rail = rail  # "└"（最新一条）或 "│"
+        self.branch = branch  # 首行分支符："├ " 或末条 "└ "
+        self.cont = cont      # 续行前缀："│ "（下方还有分支）或 "  "（末条）
         self.style = style
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
@@ -67,11 +69,8 @@ class _PromptText:
             last.truncate(avail - 1)
             last.append("…", self.style or None)
         for i, body in enumerate(kept):
-            out = Text("  ", no_wrap=True)
-            if i == 0:
-                out.append(f"{self.rail} ", style=_S.dim)
-            else:
-                out.append("│ " if self.rail == "│" else "  ", style=_S.dim)
+            out = Text(no_wrap=True)
+            out.append(self.branch if i == 0 else self.cont, style=_S.dim)
             out.append_text(body)
             yield out
 
@@ -105,10 +104,11 @@ def render_sidebar(sessions: list[LiveSession]) -> Group:
         head.apply_meta({"@click": f"app.jump_to('{s.session_id}')"})
         lines.append(head)
         for i, p in enumerate(s.prompts):
-            newest = i == len(s.prompts) - 1
+            last = i == len(s.prompts) - 1
             lines.append(_PromptText(
                 text=_one_line(p.text),
-                rail="└" if newest else "│",
-                style="" if newest else _S.dim,
+                branch="└ " if last else "├ ",
+                cont="  " if last else "│ ",
+                style="" if last else _S.dim,
             ))
     return Group(*lines)

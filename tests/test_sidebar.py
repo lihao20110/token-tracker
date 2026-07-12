@@ -290,6 +290,23 @@ def test_render_prompt_wraps_two_lines_with_ellipsis():
     assert all(len(ln.rstrip()) <= 40 - 2 for ln in body_lines)  # 右侧留白 2 格
 
 
+def test_render_tree_glyphs_count_prompts():
+    # 树状语义：每条提示词一个分支符（├，末条 └）——数分支即数提示词；
+    # 非末条折行的续行用 │ 延续轨道，与新条目肉眼可分
+    now = datetime.now(UTC)
+    long_prompt = "很长的提示词内容" * 15
+    sessions = [LiveSession(agent_id="claude-code", session_id="s1", project="proj",
+                            last_activity=now, state=WAITING,
+                            prompts=[Prompt(long_prompt, now), Prompt("第二条", now),
+                                     Prompt("第三条", now)])]
+    console = Console(record=True, width=40, force_terminal=True)
+    console.print(render_sidebar(sessions))
+    out = console.export_text().splitlines()
+    assert sum(1 for ln in out if ln.startswith("├")) == 2
+    assert sum(1 for ln in out if ln.startswith("└")) == 1
+    assert any(ln.startswith("│") for ln in out)  # 首条折行的续行
+
+
 def test_render_prompt_short_stays_single_line():
     now = datetime.now(UTC)
     sessions = [LiveSession(agent_id="claude-code", session_id="s1", project="proj",
