@@ -17,6 +17,8 @@ from .format import AGENT_SHORT, _model_short
 from .theme import _S
 
 _STATE_DOTS = {RUNNING: "●", ATTENTION: "●", WAITING: "●", IDLE: "○"}
+# 运行中的动画帧（CC 同款星形轮转）；spinner_frame 由 Textual 壳的动画 tick 递增
+_SPINNER = "✢✳✻✽"
 
 _PROMPT_MAX_LINES = 2  # 每条提示词最多折 N 行，超出末行省略号
 _PREFIX_WIDTH = 2      # 树枝前缀「├ 」/「└ 」/「│ 」占 2 格，与头行的 ● 同列成树
@@ -75,7 +77,7 @@ class _PromptText:
             yield out
 
 
-def render_sidebar(sessions: list[LiveSession]) -> Group:
+def render_sidebar(sessions: list[LiveSession], spinner_frame: int = 0) -> Group:
     lines: list[Text | _PromptText] = []
     header = Text(no_wrap=True, overflow="ellipsis")
     header.append("✳ tt sidebar", style=_S.accent)
@@ -91,7 +93,9 @@ def render_sidebar(sessions: list[LiveSession]) -> Group:
     for s in sessions:
         lines.append(Text(""))
         head = Text(no_wrap=True, overflow="ellipsis")
-        head.append(_STATE_DOTS.get(s.state, "●") + " ", style=_state_style(s.state))
+        dot = (_SPINNER[spinner_frame % len(_SPINNER)] if s.state == RUNNING
+               else _STATE_DOTS.get(s.state, "●"))
+        head.append(dot + " ", style=_state_style(s.state))
         head.append(s.project, style="bold")
         head.append(f" · {AGENT_SHORT.get(s.agent_id, s.agent_id)}", style=_S.blue)
         if s.model:
@@ -111,4 +115,10 @@ def render_sidebar(sessions: list[LiveSession]) -> Group:
                 cont="  " if last else "│ ",
                 style="" if last else _S.dim,
             ))
+        if s.next_hint:
+            hint = Text(no_wrap=True, overflow="ellipsis")
+            hint.append("  ↳ ", style=_S.dim)
+            hint.append(f"{t('sidebar_next')}: ", style=_S.peach)
+            hint.append(_one_line(s.next_hint), style=_S.dim)
+            lines.append(hint)
     return Group(*lines)

@@ -60,6 +60,7 @@ class LiveSession:
     prompts: list[Prompt] = field(default_factory=list)  # 时间正序，最后一条最新
     model: str = ""
     terminal: dict = field(default_factory=dict)  # 终端定位 {"iterm": ..., "tmux": ...}（statusline 采集），空=不可跳转
+    next_hint: str = ""  # 「下一步」提示：末条 assistant 回复的最后一行（通常是建议/追问），无则空
 
 
 @dataclass
@@ -70,6 +71,7 @@ class _Parsed:
     prompts: list[Prompt]
     pending_tool: bool  # 末个工具调用尚无结果（CC）/ task 未 complete（Codex）
     model: str = ""
+    next_hint: str = ""
 
 
 # 按 (mtime, size) 缓存解析结果：常驻刷新时只重解析有变化的文件
@@ -208,6 +210,7 @@ def _scan_claude_sessions(cutoff: datetime, now: datetime,
                 prompts=parsed.prompts,
                 model=parsed.model,
                 terminal=term_map.get(parsed.session_id) or {},
+                next_hint=parsed.next_hint,
             ))
     return sessions
 
@@ -218,6 +221,7 @@ def _parse_claude(path: Path, fallback_project: str, max_prompts: int) -> _Parse
     prompts: list[Prompt] = []
     pending_tool = False
     model = ""
+    last_reply = ""
     for data in iter_jsonl_dicts(path):
         if data.get("isSidechain"):  # 子代理 sidechain 的消息不是主人敲的提示词
             continue
@@ -249,13 +253,21 @@ def _parse_claude(path: Path, fallback_project: str, max_prompts: int) -> _Parse
                 continue
             model = message.get("model") or model
             content = message.get("content")
+            reply = ""
             if isinstance(content, list):
                 pending_tool = any(isinstance(i, dict) and i.get("type") == "tool_use" for i in content)
+                parts = [i.get("text", "") for i in content
+                         if isinstance(i, dict) and i.get("type") == "text"]
+                reply = "\n".join(p for p in parts if p)
             elif isinstance(content, str):
                 pending_tool = False
+                reply = content
+            if reply.strip():
+                last_reply = reply
     if not prompts:
         return None
-    return _Parsed(session_id, project, prompts[-max_prompts:], pending_tool, model)
+    return _Parsed(session_id, project, prompts[-max_prompts:], pending_tool, model,
+                   next_hint=_last_line(last_reply))
 
 
 def _is_tool_result(content: object) -> bool:
@@ -322,6 +334,7 @@ def _scan_codex_sessions(cutoff: datetime, now: datetime,
             prompts=parsed.prompts,
             model=parsed.model or models.get(parsed.session_id, ""),
             terminal=term_map.get(parsed.session_id) or {},
+            next_hint=parsed.next_hint,
         ))
     return sessions
 
@@ -331,6 +344,7 @@ def _parse_codex(path: Path, max_prompts: int) -> _Parsed | None:
     project = "unknown"
     prompts: list[Prompt] = []
     pending_task = False
+    last_reply = ""
     for data in iter_jsonl_dicts(path):
         payload = data.get("payload")
         if not isinstance(payload, dict):
@@ -347,13 +361,27 @@ def _parse_codex(path: Path, max_prompts: int) -> _Parsed | None:
                 text = (payload.get("message") or "").strip()
                 if text and not text.startswith(_CODEX_SKIP_PREFIXES):
                     prompts.append(Prompt(text=text, timestamp=_parse_ts(data.get("timestamp"))))
+            elif ptype == "agent_message":
+                reply = payload.get("message") or ""
+                if reply.strip():
+                    last_reply = reply
             elif ptype == "task_started":
                 pending_task = True
             elif ptype in ("task_complete", "turn_aborted"):
                 pending_task = False
     if not prompts:
         return None
-    return _Parsed(session_id or path.stem, project, prompts[-max_prompts:], pending_task)
+    return _Parsed(session_id or path.stem, project, prompts[-max_prompts:], pending_task,
+                   next_hint=_last_line(last_reply))
+
+
+def _last_line(text: str, limit: int = 200) -> str:
+    """取回复的最后一个非空行（通常是「下一步」建议/追问），限长防超长行。"""
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if line:
+            return line[:limit]
+    return ""
 
 
 def _parse_ts(raw: object) -> datetime | None:

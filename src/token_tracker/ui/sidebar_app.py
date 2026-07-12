@@ -18,11 +18,12 @@ from textual.widgets import Footer, Static
 
 from .. import config
 from ..i18n import t
-from ..sidebar import scan_sessions, terminal_info
+from ..sidebar import RUNNING, LiveSession, scan_sessions, terminal_info
 from .sidebar import render_sidebar
 from .themes import get_theme
 
 REFRESH_SECONDS = 5.0
+SPINNER_SECONDS = 0.5  # 运行中动画帧间隔——只用缓存会话重绘，不触发磁盘扫描
 
 
 def _jump_argvs(info: dict) -> list[list[str]] | None:
@@ -96,10 +97,13 @@ class SidebarApp(App[None]):
         # ansi_color=True：不把 ANSI 色转成 Textual 主题色，背景用终端自身默认色
         super().__init__(ansi_color=True)
         self._agent_ids = agent_ids
+        self._sessions: list[LiveSession] = []
+        self._frame = 0
 
     def compose(self) -> ComposeResult:
+        self._sessions = scan_sessions(agent_ids=self._agent_ids)
         with VerticalScroll():
-            yield _SidebarBody(render_sidebar(scan_sessions(agent_ids=self._agent_ids)), id="sidebar-body")
+            yield _SidebarBody(render_sidebar(self._sessions), id="sidebar-body")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -107,10 +111,21 @@ class SidebarApp(App[None]):
         self.theme = "ansi-light" if get_theme(config.resolve_theme()).get("is_light") else "ansi-dark"
         self.query_one(VerticalScroll).focus()  # 容器持焦点，方向键/PgUp/PgDn 直接滚
         self.set_interval(REFRESH_SECONDS, self._refresh)
+        self.set_interval(SPINNER_SECONDS, self._tick_spinner)
+
+    def _update_body(self) -> None:
+        self.query_one("#sidebar-body", Static).update(render_sidebar(self._sessions, self._frame))
 
     def _refresh(self) -> None:
-        self.query_one("#sidebar-body", Static).update(
-            render_sidebar(scan_sessions(agent_ids=self._agent_ids)))
+        self._sessions = scan_sessions(agent_ids=self._agent_ids)
+        self._update_body()
+
+    def _tick_spinner(self) -> None:
+        """动画帧：仅在有运行中会话时重绘（纯内存渲染，5s 的磁盘扫描节奏不变）。"""
+        if not any(s.state == RUNNING for s in self._sessions):
+            return
+        self._frame += 1
+        self._update_body()
 
     def action_jump_to(self, session_id: str) -> None:
         """点击会话头行触发：跳转焦点到该会话所在的终端窗格。

@@ -319,6 +319,44 @@ def test_render_prompt_short_stays_single_line():
     assert "…" not in body_lines[0]
 
 
+def test_next_hint_from_last_assistant_reply(tmp_path):
+    # 「下一步」= 末条 assistant 回复的最后一个非空行；后续新回复覆盖旧的
+    rows = [
+        _u("改一下"),
+        _a("改好了。\n\n要我继续做 B 么"),
+        _u("继续"),
+        _a([{"type": "text", "text": "B 也完成。\n验证后我们再发版"}]),
+    ]
+    parsed = _parse_claude(_write_jsonl(tmp_path / "s.jsonl", rows), "p", 5)
+    assert parsed.next_hint == "验证后我们再发版"
+
+
+def test_codex_next_hint_from_agent_message(tmp_path):
+    rows = [
+        {"timestamp": "2026-07-12T02:00:00.000Z", "type": "session_meta",
+         "payload": {"id": "cx", "timestamp": "2026-07-12T02:00:00.000Z", "cwd": "/tmp/x"}},
+        {"timestamp": "2026-07-12T02:00:02.000Z", "type": "event_msg",
+         "payload": {"type": "user_message", "message": "做个功能"}},
+        {"timestamp": "2026-07-12T02:00:09.000Z", "type": "event_msg",
+         "payload": {"type": "agent_message", "message": "完成了。\n需要我补测试吗"}},
+    ]
+    parsed = _parse_codex(_write_jsonl(tmp_path / "r.jsonl", rows), 5)
+    assert parsed.next_hint == "需要我补测试吗"
+
+
+def test_render_next_hint_and_spinner_frame():
+    now = datetime.now(UTC)
+    sessions = [LiveSession(agent_id="claude-code", session_id="s1", project="proj",
+                            last_activity=now, state=RUNNING,
+                            prompts=[Prompt("干活", now)], next_hint="验证后我们再发版")]
+    console = Console(record=True, width=60, force_terminal=True)
+    console.print(render_sidebar(sessions, spinner_frame=0))
+    console.print(render_sidebar(sessions, spinner_frame=1))
+    out = console.export_text()
+    assert "验证后我们再发版" in out
+    assert "✢ proj" in out and "✳ proj" in out  # 帧不同 → 会话头星形符号轮转（标题自带 ✳，不数全局）
+
+
 def test_render_sidebar_empty():
     console = Console(record=True, width=60)
     console.print(render_sidebar([]))
