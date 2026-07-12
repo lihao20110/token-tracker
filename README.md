@@ -14,6 +14,7 @@
 
 - **多 Agent 统一追踪** — Claude Code + Codex 统一读取，多 Agent 按来源分组
 - **状态栏集成** — Claude Code 用官方 StatusLine 接口；**Codex 业界首创伪 statusline 方案**（hook 注入两行真彩色状态栏，把官方未开放的能力在 Codex 里做了出来）
+- **实时侧边栏** — `tt sidebar` 窄窗格常驻面板：全部活跃会话一屏总览（状态灯 + 最近提示词 + 「下一步」建议），点击会话直达对应 iTerm2 / tmux 窗格
 - **限额监控** — 实时 5h / 7d 配额百分比 + 重置倒计时
 - **多维成本分析** — 会话 / 日 / 周 / 月多维报表，等效成本统计
 - **定价识别** — litellm 在线定价 + 内置官方价双层兜底，覆盖 Claude / OpenAI / Gemini / Grok 及国产主流（Kimi / GLM / Qwen / 豆包 / DeepSeek / MiniMax / MiMo）；新模型自动套用同系列定价、不静默归零
@@ -87,6 +88,18 @@ Codex 官方暂不支持自定义 StatusLine。Token Tracker 通过 hook 注入�
 
 ![Sessions](assets/screenshot-sessions.png)
 
+## 实时侧边栏（`tt sidebar`）
+
+在终端分屏 / tmux 窄窗格里常驻，一屏总览本机所有 AI 会话：
+
+- **活跃会话列表** — 过去 5h 内有动静的会话（Claude Code + Codex），按最近活动排序取前 10；头行显示状态灯、`项目名(分支)`、agent、模型与距上次活动时间
+- **提示词历史** — 每会话最近 5 条提示词，树状连接、最新一条常亮
+- **状态灯** — 运行中（星形动画）/ 需要关注（工具调用无结果，大概率在等授权）/ 等输入 / 空闲
+- **「下一步」建议** — 从 AI 最后一条回复的收尾段提取征询 / 待办（纯规则，不走模型）；AI 正在用 AskUserQuestion 提问时直接显示问题与选项
+- **点击跳转** — 点会话头行直接切换到它所在的 iTerm2 / tmux 窗格（需启用 CC 状态栏组件提供映射；iTerm2 首次点击会弹 macOS 自动化授权，属预期）
+
+操作：滚轮 / 方向键 / PgUp/PgDn 滚动，`q` / `Esc` / `Ctrl+C` 退出；`tt sidebar --once` 打印一帧快照即退。数据每 5s 刷新，只读本地会话记录、不写任何产物；加 `--claude` / `--codex` 可只看单个 agent。
+
 ## 安装
 
 ```bash
@@ -115,6 +128,7 @@ tt status         # 过去 5h 实时面板
 tt weekly         # 周报
 tt monthly        # 月报
 tt sessions       # 最近 20 条会话明细（tt sessions <n> 改条数、--sort 改排序）
+tt sidebar        # 常驻侧边栏：活跃会话总览 + 提示词历史 + 状态灯 + 点击跳转（--once 一帧快照）
 tt theme          # 查看 / 切换配色主题（show / list / set / preview）
 tt unsetup        # 卸载并恢复安装前的配置
 tt --version      # 查看版本（-v / -V 同义）
