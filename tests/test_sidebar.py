@@ -232,6 +232,34 @@ def test_render_sidebar_smoke():
     assert "Codex" in text
 
 
+def test_render_prompt_wraps_two_lines_with_ellipsis():
+    # 长提示词最多折 2 行、末行省略号；正文右侧留 2 格（行宽 ≤ 终端宽 - 2）
+    now = datetime.now(UTC)
+    long_prompt = "这是一条非常长的提示词内容" * 12
+    sessions = [LiveSession(agent_id="claude-code", session_id="s1", project="proj",
+                            last_activity=now, state=WAITING,
+                            prompts=[Prompt(long_prompt, now)])]
+    console = Console(record=True, width=40, force_terminal=True)
+    console.print(render_sidebar(sessions))
+    out_lines = console.export_text().splitlines()
+    body_lines = [ln for ln in out_lines if "提示词" in ln or "非常长" in ln]
+    assert len(body_lines) == 2
+    assert body_lines[-1].rstrip().endswith("…")
+    assert all(len(ln.rstrip()) <= 40 - 2 for ln in body_lines)  # 右侧留白 2 格
+
+
+def test_render_prompt_short_stays_single_line():
+    now = datetime.now(UTC)
+    sessions = [LiveSession(agent_id="claude-code", session_id="s1", project="proj",
+                            last_activity=now, state=WAITING,
+                            prompts=[Prompt("短提示词", now)])]
+    console = Console(record=True, width=40, force_terminal=True)
+    console.print(render_sidebar(sessions))
+    body_lines = [ln for ln in console.export_text().splitlines() if "短提示词" in ln]
+    assert len(body_lines) == 1
+    assert "…" not in body_lines[0]
+
+
 def test_render_sidebar_empty():
     console = Console(record=True, width=60)
     console.print(render_sidebar([]))
