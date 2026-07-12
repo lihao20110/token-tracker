@@ -21,6 +21,9 @@ async def test_sidebar_app_boots_renders_and_quits():
         # 滚动条已降噪：拇指非默认亮色、轨道透明（回归：曾被 ansi 主题映射成亮蓝大色块）
         assert scroll.styles.scrollbar_color.hex != "#000000"
         assert scroll.styles.scrollbar_background.a == 0
+        # Screen 层禁滚（回归：resize 瞬间 Screen 自己的 2 格滚动条会叠出第二条）
+        assert str(app.screen.styles.overflow_y) == "hidden"
+        assert not app.screen.show_vertical_scrollbar
         await pilot.press("q")
     # run_test 正常退出即通过：q 绑定 quit、app 无异常
 

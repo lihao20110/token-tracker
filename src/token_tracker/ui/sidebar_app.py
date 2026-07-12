@@ -30,6 +30,9 @@ class SidebarApp(App[None]):
     ]
 
     CSS = """
+    /* 滚动只发生在 VerticalScroll 一层；Screen 禁滚，杜绝 resize 瞬间冒出第二条
+       （Screen 默认滚动条宽 2 格）叠在容器滚动条旁边 */
+    Screen { overflow-x: hidden; overflow-y: hidden; }
     VerticalScroll { scrollbar-size: 1 1; }
     #sidebar-body { width: 1fr; }
     """
