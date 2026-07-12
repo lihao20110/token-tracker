@@ -2,16 +2,21 @@
 
 数据与渲染完全复用 `sidebar.scan_sessions` + `ui.sidebar.render_sidebar`——Rich renderable
 直接塞进 Static 整帧更新，滚动位置由 VerticalScroll 容器保持（滚轮 / 方向键 / PgUp/PgDn）。
+配色继承终端：`ansi_color=True` + `ansi-dark/light` 主题让 app chrome（背景/滚动条/Footer）
+走终端 ANSI 调色板、不糊 Textual 自己的深色底；正文内容色仍由 tt 主题（`_S` 运行时代理）给，
+`tt sidebar --theme <名>` 可临时切。明暗跟随 tt 主题的 is_light。
 本模块 import textual，cli 只在 live 模式延迟 import（照 questionary 先例，日常 tt 启动不加载）。
 点击跳转到对应终端窗格（需 statusline 携带 ITERM_SESSION_ID / TMUX_PANE 映射）留下一迭代。
 """
 
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
-from textual.widgets import Static
+from textual.widgets import Footer, Static
 
+from .. import config
 from ..sidebar import scan_sessions
 from .sidebar import render_sidebar
+from .themes import get_theme
 
 REFRESH_SECONDS = 5.0
 
@@ -19,26 +24,32 @@ REFRESH_SECONDS = 5.0
 class SidebarApp(App[None]):
     BINDINGS = [
         ("q", "quit", "退出"),
-        # Textual 部分版本默认把 ctrl+c 让给剪贴板，显式绑回退出、与 Rich Live 时代习惯一致
+        ("escape", "quit", "退出"),
+        # Textual 部分版本默认把 ctrl+c 让给剪贴板，显式绑回退出、与终端习惯一致
         ("ctrl+c", "quit", "退出"),
     ]
 
     CSS = """
     VerticalScroll { scrollbar-size: 1 1; }
-    Static { width: 1fr; }
+    #sidebar-body { width: 1fr; }
     """
 
     def __init__(self, agent_ids: set[str] | None = None) -> None:
-        super().__init__()
+        # ansi_color=True：不把 ANSI 色转成 Textual 主题色，背景用终端自身默认色
+        super().__init__(ansi_color=True)
         self._agent_ids = agent_ids
 
     def compose(self) -> ComposeResult:
         with VerticalScroll():
-            yield Static(render_sidebar(scan_sessions(agent_ids=self._agent_ids)))
+            yield Static(render_sidebar(scan_sessions(agent_ids=self._agent_ids)), id="sidebar-body")
+        yield Footer()
 
     def on_mount(self) -> None:
+        # chrome（滚动条/Footer）配色映射到终端 ANSI 调色板；明暗跟随 tt 主题
+        self.theme = "ansi-light" if get_theme(config.resolve_theme()).get("is_light") else "ansi-dark"
         self.query_one(VerticalScroll).focus()  # 容器持焦点，方向键/PgUp/PgDn 直接滚
         self.set_interval(REFRESH_SECONDS, self._refresh)
 
     def _refresh(self) -> None:
-        self.query_one(Static).update(render_sidebar(scan_sessions(agent_ids=self._agent_ids)))
+        self.query_one("#sidebar-body", Static).update(
+            render_sidebar(scan_sessions(agent_ids=self._agent_ids)))
