@@ -63,6 +63,32 @@ def test_rendered_hook_script_has_single_version_source():
     assert "__HOOK_VERSION__" not in rendered
 
 
+def test_statusline_records_terminal_map(tmp_path):
+    # HOOK_VERSION 2.0：statusline 按 session_id 采集 ITERM_SESSION_ID/TMUX_PANE 进
+    # _terminal_map（sidebar 点击跳转的映射源），多会话合并不互相清零。
+    # HOME 重定向到 tmp，脚本的 STATUS_FILE(~/.config/...) 随之落在临时目录、不碰真实文件。
+    script = tmp_path / "tt-statusline.py"
+    script.write_text(hooks._render_hook_script(), encoding="utf-8")
+    env = dict(os.environ, HOME=str(tmp_path),
+               ITERM_SESSION_ID="w0t1p0:AAA-111", TMUX_PANE="%7", COLUMNS="120")
+
+    def _run(session_id):
+        data = {"session_id": session_id,
+                "workspace": {"project_dir": str(tmp_path)},
+                "context_window": {"used_percentage": 30, "context_window_size": 200000,
+                                   "total_input_tokens": 100, "total_output_tokens": 50}}
+        subprocess.run([sys.executable, str(script)], input=json.dumps(data),
+                       text=True, capture_output=True, env=env)
+
+    _run("sess-a")
+    env["ITERM_SESSION_ID"] = "w0t2p0:BBB-222"
+    _run("sess-b")
+    status = json.loads((tmp_path / ".config" / "token-tracker" / "tt-status.json").read_text())
+    tmap = status["_terminal_map"]
+    assert tmap["sess-a"] == {"iterm": "w0t1p0:AAA-111", "tmux": "%7"}  # 第二帧未清掉第一帧
+    assert tmap["sess-b"] == {"iterm": "w0t2p0:BBB-222", "tmux": "%7"}
+
+
 def test_installed_version_parser_roundtrips(tmp_path, monkeypatch):
     # _installed_hook_version 读回的版本应与写入的 HOOK_VERSION 一致，
     # 保证 needs_update 不会因解析偏差而误判。

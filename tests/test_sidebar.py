@@ -198,6 +198,52 @@ def test_scan_sessions_caps_at_max_sessions(monkeypatch):
     assert [s.session_id for s in got] == [f"s{i}" for i in range(10)]  # 最新的 10 个
 
 
+def test_read_status_returns_terminal_map(tmp_path, monkeypatch):
+    status = tmp_path / "tt-status.json"
+    status.write_text(json.dumps({
+        "session_id": "s-live", "_received_at": datetime.now(UTC).isoformat(),
+        "_terminal_map": {"s-live": {"iterm": "w0t1p0:AAA-BBB", "tmux": "%3"}},
+    }), encoding="utf-8")
+    monkeypatch.setattr(sidebar.config, "STATUS_FILE", str(status))
+    hb, term_map = sidebar._read_status()
+    assert hb is not None and hb[0] == "s-live"
+    assert term_map["s-live"]["iterm"] == "w0t1p0:AAA-BBB"
+    assert sidebar.terminal_info("s-live")["tmux"] == "%3"
+    assert sidebar.terminal_info("unknown") == {}
+
+
+def test_scan_claude_attaches_terminal(tmp_path):
+    base = _make_claude_base(tmp_path)
+    _write_jsonl(base / "-Users-x-project-alpha" / "s1.jsonl", [_u("你好")])
+    now = datetime.now(UTC)
+    term_map = {"s1": {"iterm": "w0t2p0:CCC"}}
+    got = _scan_claude_sessions(now - timedelta(hours=12), now, None, 3,
+                                dirs=[str(base)], term_map=term_map)
+    assert got[0].terminal == {"iterm": "w0t2p0:CCC"}
+
+
+def test_render_head_click_meta_only_with_terminal():
+    from rich.text import Text
+    now = datetime.now(UTC)
+
+    def _mk(terminal):
+        return LiveSession(agent_id="claude-code", session_id="sX", project="p",
+                           last_activity=now, state=WAITING,
+                           prompts=[Prompt("x", now)], terminal=terminal)
+
+    def _has_click(group):
+        for r in group.renderables:
+            if isinstance(r, Text):
+                for span in r.spans:
+                    meta = getattr(span.style, "meta", None)
+                    if meta and "@click" in meta:
+                        return True
+        return False
+
+    assert _has_click(render_sidebar([_mk({"iterm": "w0t0p0:X"})]))
+    assert not _has_click(render_sidebar([_mk({})]))
+
+
 def test_heartbeat_marks_running(tmp_path):
     base = _make_claude_base(tmp_path)
     d = base / "-Users-x-project-alpha"

@@ -161,25 +161,28 @@ def save_data(data, now):
 
 
 def _read_prev(session_id):
-    """读旧 tt-status.json：本会话 (api_duration_ms, last_tps) + 全量 _tps_state（供合并写回）。
+    """读旧 tt-status.json：本会话 (api_duration_ms, last_tps) + 全量 _tps_state + _terminal_map。
 
     tt-status.json 是多会话共享单文件、会被其它会话覆盖；TPS 差分按 session_id 存进
-    _tps_state dict、各会话互不干扰。返回 state 让本帧把自己的状态并回去、不丢别的会话。
+    _tps_state dict、各会话互不干扰。返回 state / term_map 让本帧把自己的状态并回去、不丢别的会话。
     """
     try:
         with open(STATUS_FILE, encoding="utf-8") as f:
             old = json.load(f)
     except Exception:
-        return None, None, {}
+        return None, None, {}, {}
     state = old.get("_tps_state")
     if not isinstance(state, dict):
         state = {}
+    term_map = old.get("_terminal_map")
+    if not isinstance(term_map, dict):
+        term_map = {}
     if session_id and session_id in state:
         s = state.get(session_id) or {}
-        return s.get("api"), s.get("tps"), state
+        return s.get("api"), s.get("tps"), state, term_map
     if session_id and old.get("session_id") == session_id:  # 兼容升级前的旧单会话帧
-        return (old.get("cost") or {}).get("total_api_duration_ms"), old.get("_last_tps"), state
-    return None, None, state
+        return (old.get("cost") or {}).get("total_api_duration_ms"), old.get("_last_tps"), state, term_map
+    return None, None, state, term_map
 
 
 def _compute_tps(data, prev_api_ms, prev_tps):
@@ -368,7 +371,7 @@ def main():
 
     now = datetime.now(timezone.utc)
     session_id = data.get("session_id") or ""
-    prev_api_ms, prev_tps, state = _read_prev(session_id)  # 覆盖前读旧帧（按会话）
+    prev_api_ms, prev_tps, state, term_map = _read_prev(session_id)  # 覆盖前读旧帧（按会话）
     tps = _compute_tps(data, prev_api_ms, prev_tps)
     if session_id:  # 本会话 TPS 状态并回 _tps_state（多会话共享文件互不清零；LRU 限 20 防膨胀）
         state.pop(session_id, None)
@@ -376,6 +379,19 @@ def main():
         for k in list(state)[:-20]:
             del state[k]
         data["_tps_state"] = state
+        # 终端定位（tt sidebar 点击跳转用）：statusline 是 CC 子进程，继承会话所在
+        # 终端的环境——iTerm2 每窗格注入 ITERM_SESSION_ID、tmux 注入 TMUX_PANE。
+        # 按 session_id 并回共享 map（同 _tps_state 的合并/LRU 语义）。
+        term = {}
+        if os.environ.get("ITERM_SESSION_ID"):
+            term["iterm"] = os.environ["ITERM_SESSION_ID"]
+        if os.environ.get("TMUX_PANE"):
+            term["tmux"] = os.environ["TMUX_PANE"]
+        term_map.pop(session_id, None)
+        term_map[session_id] = term
+        for k in list(term_map)[:-20]:
+            del term_map[k]
+        data["_terminal_map"] = term_map
     save_data(data, now)
     render(data, now, tps)
 

@@ -9,16 +9,52 @@
 点击跳转到对应终端窗格（需 statusline 携带 ITERM_SESSION_ID / TMUX_PANE 映射）留下一迭代。
 """
 
+import subprocess
+
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.widgets import Footer, Static
 
 from .. import config
-from ..sidebar import scan_sessions
+from ..i18n import t
+from ..sidebar import scan_sessions, terminal_info
 from .sidebar import render_sidebar
 from .themes import get_theme
 
 REFRESH_SECONDS = 5.0
+
+
+def _jump_argvs(info: dict) -> list[list[str]] | None:
+    """终端定位 → 跳转命令序列；无可用定位返回 None。
+
+    tmux 优先（零授权、pane 级精确）：select-window 接受 pane 目标、会选中其所在 window。
+    iTerm2 走 AppleScript：ITERM_SESSION_ID 形如 "w0t3p0:<UUID>"，session 的 AppleScript
+    `id` 即冒号后的 UUID；逐层匹配后选中 tab/session 并把窗口带到最前（首次触发 macOS
+    自动化授权弹窗属预期）。
+    """
+    if info.get("tmux"):
+        pane = info["tmux"]
+        return [["tmux", "select-window", "-t", pane], ["tmux", "select-pane", "-t", pane]]
+    if info.get("iterm"):
+        uuid = info["iterm"].rpartition(":")[2]
+        script = f'''
+        tell application "iTerm2"
+            repeat with w in windows
+                repeat with tb in tabs of w
+                    repeat with s in sessions of tb
+                        if id of s is "{uuid}" then
+                            tell w to select tb
+                            select s
+                            set index of w to 1
+                            activate
+                            return
+                        end if
+                    end repeat
+                end repeat
+            end repeat
+        end tell'''
+        return [["osascript", "-e", script]]
+    return None
 
 
 class SidebarApp(App[None]):
@@ -57,3 +93,30 @@ class SidebarApp(App[None]):
     def _refresh(self) -> None:
         self.query_one("#sidebar-body", Static).update(
             render_sidebar(scan_sessions(agent_ids=self._agent_ids)))
+
+    def action_jump_to(self, session_id: str) -> None:
+        """点击会话头行触发：跳转焦点到该会话所在的终端窗格。
+
+        定位现读 STATUS_FILE（比渲染时快照新）；命令跑 worker 线程——osascript 首次
+        触发 macOS 自动化授权弹窗时会阻塞，不能卡住 UI 事件循环。
+        """
+        info = terminal_info(session_id)
+        argvs = _jump_argvs(info)
+        if argvs is None:
+            self.notify(t("sidebar_jump_no_target"), severity="warning", timeout=4)
+            return
+        self.run_worker(lambda: self._run_jump(argvs), thread=True)
+
+    def _run_jump(self, argvs: list[list[str]]) -> None:
+        for argv in argvs:
+            try:
+                proc = subprocess.run(argv, capture_output=True, text=True, timeout=15)
+            except (OSError, subprocess.TimeoutExpired) as e:
+                self.call_from_thread(self.notify, t("sidebar_jump_failed", err=str(e)[:80]),
+                                      severity="error", timeout=4)
+                return
+            if proc.returncode != 0:
+                err = (proc.stderr or "").strip()[:80] or f"exit {proc.returncode}"
+                self.call_from_thread(self.notify, t("sidebar_jump_failed", err=err),
+                                      severity="error", timeout=4)
+                return

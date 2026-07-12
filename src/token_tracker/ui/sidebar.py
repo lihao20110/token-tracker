@@ -99,6 +99,10 @@ def render_sidebar(sessions: list[LiveSession]) -> Group:
             head.append(f" · {_model_short(s.model)}", style=_S.dim)
         head.append(f" · {_fmt_ago(now, s.last_activity)}", style=_S.dim)
         head.append(f"  {t('sidebar_state_' + s.state)}", style=_state_style(s.state))
+        if s.terminal:
+            # 有终端定位的会话头行可点：Textual 会把 @click action 派发到 App.action_jump_to；
+            # --once 的纯 Rich 快照路径 meta 无害
+            head.apply_meta({"@click": f"jump_to('{s.session_id}')"})
         lines.append(head)
         for i, p in enumerate(s.prompts):
             newest = i == len(s.prompts) - 1

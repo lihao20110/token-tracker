@@ -7,7 +7,22 @@ app 渲染空态——测试不依赖本机 ~/.claude / ~/.codex 内容。
 from textual.containers import VerticalScroll
 from textual.widgets import Static
 
-from token_tracker.ui.sidebar_app import SidebarApp
+from token_tracker.ui.sidebar_app import SidebarApp, _jump_argvs
+
+
+def test_jump_argvs_tmux_takes_priority():
+    argvs = _jump_argvs({"tmux": "%5", "iterm": "w0t1p0:AAA"})
+    assert argvs == [["tmux", "select-window", "-t", "%5"], ["tmux", "select-pane", "-t", "%5"]]
+
+
+def test_jump_argvs_iterm_extracts_uuid():
+    argvs = _jump_argvs({"iterm": "w0t3p0:1A2B-3C4D"})
+    assert len(argvs) == 1 and argvs[0][0] == "osascript"
+    assert 'if id of s is "1A2B-3C4D"' in argvs[0][2]
+
+
+def test_jump_argvs_none_without_target():
+    assert _jump_argvs({}) is None
 
 
 async def test_sidebar_app_boots_renders_and_quits():

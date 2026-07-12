@@ -59,6 +59,7 @@ class LiveSession:
     state: str
     prompts: list[Prompt] = field(default_factory=list)  # 时间正序，最后一条最新
     model: str = ""
+    terminal: dict = field(default_factory=dict)  # 终端定位 {"iterm": ..., "tmux": ...}（statusline 采集），空=不可跳转
 
 
 @dataclass
@@ -83,12 +84,12 @@ def scan_sessions(hours_back: int = DEFAULT_HOURS_BACK,
     agent_ids=None 表示不过滤。"""
     now = datetime.now(UTC)
     cutoff = now - timedelta(hours=hours_back)
-    heartbeat = _read_heartbeat()
+    heartbeat, term_map = _read_status()
     sessions: list[LiveSession] = []
     if agent_ids is None or "claude-code" in agent_ids:
-        sessions.extend(_scan_claude_sessions(cutoff, now, heartbeat, max_prompts))
+        sessions.extend(_scan_claude_sessions(cutoff, now, heartbeat, max_prompts, term_map=term_map))
     if agent_ids is None or "codex" in agent_ids:
-        sessions.extend(_scan_codex_sessions(cutoff, now, heartbeat, max_prompts))
+        sessions.extend(_scan_codex_sessions(cutoff, now, heartbeat, max_prompts, term_map=term_map))
     sessions.sort(key=lambda s: s.last_activity, reverse=True)
     return sessions[:max_sessions]
 
@@ -105,20 +106,38 @@ def _infer_state(now: datetime, last_activity: datetime,
     return WAITING
 
 
-def _read_heartbeat() -> tuple[str, datetime] | None:
-    """CC statusline 心跳：(session_id, 最近一帧时间)。文件只反映最近渲染的那一个会话。"""
+def _read_status() -> tuple[tuple[str, datetime] | None, dict[str, dict]]:
+    """读 CC statusline 落盘文件一次，返回 (心跳, 终端定位 map)。
+
+    心跳 = (session_id, 最近一帧时间)，只反映最近渲染的那一个会话；
+    终端定位 = `_terminal_map`（statusline ≥2.0 采集的 ITERM_SESSION_ID/TMUX_PANE，
+    按 session_id 隔离），旧版脚本没有该字段时返回空 dict、点击跳转优雅降级。
+    """
     try:
         with open(config.STATUS_FILE, encoding="utf-8") as f:
             data = json.load(f)
-        sid = data.get("session_id") or ""
+    except (OSError, json.JSONDecodeError):
+        return None, {}
+    term_map = data.get("_terminal_map")
+    if not isinstance(term_map, dict):
+        term_map = {}
+    sid = data.get("session_id") or ""
+    try:
         ts = datetime.fromisoformat(data.get("_received_at", ""))
-    except (OSError, ValueError, json.JSONDecodeError):
-        return None
+    except ValueError:
+        return None, term_map
     if not sid:
-        return None
+        return None, term_map
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=UTC)
-    return sid, ts
+    return (sid, ts), term_map
+
+
+def terminal_info(session_id: str) -> dict:
+    """某会话的终端定位（点击跳转用），无记录返回 {}。每次现读文件，保证拿最新。"""
+    _, term_map = _read_status()
+    info = term_map.get(session_id)
+    return info if isinstance(info, dict) else {}
 
 
 def _heartbeat_fresh(heartbeat: tuple[str, datetime] | None, session_id: str, now: datetime) -> bool:
@@ -153,8 +172,10 @@ def _cache_put(path: Path, parsed: _Parsed) -> None:
 def _scan_claude_sessions(cutoff: datetime, now: datetime,
                           heartbeat: tuple[str, datetime] | None,
                           max_prompts: int,
-                          dirs: list[str] | None = None) -> list[LiveSession]:
+                          dirs: list[str] | None = None,
+                          term_map: dict[str, dict] | None = None) -> list[LiveSession]:
     """dirs 供测试注入；默认复用 claude adapter 的目录解析（CLAUDE_CONFIG_DIR 等）。"""
+    term_map = term_map or {}
     sessions: list[LiveSession] = []
     seen: set[str] = set()
     for base_dir in (dirs if dirs is not None else claude_adapter._get_claude_dirs()):
@@ -186,6 +207,7 @@ def _scan_claude_sessions(cutoff: datetime, now: datetime,
                                    _heartbeat_fresh(heartbeat, parsed.session_id, now)),
                 prompts=parsed.prompts,
                 model=parsed.model,
+                terminal=term_map.get(parsed.session_id) or {},
             ))
     return sessions
 
@@ -266,7 +288,9 @@ def _claude_prompt_text(content: object) -> str | None:
 def _scan_codex_sessions(cutoff: datetime, now: datetime,
                          heartbeat: tuple[str, datetime] | None,
                          max_prompts: int,
-                         sessions_dir: str | None = None) -> list[LiveSession]:
+                         sessions_dir: str | None = None,
+                         term_map: dict[str, dict] | None = None) -> list[LiveSession]:
+    term_map = term_map or {}  # Codex 伪 statusline 暂未采集终端定位，通常为空、点击不可用
     base = Path(sessions_dir if sessions_dir is not None else codex_adapter.SESSIONS_DIR)
     if not base.is_dir():
         return []
@@ -297,6 +321,7 @@ def _scan_codex_sessions(cutoff: datetime, now: datetime,
                                _heartbeat_fresh(heartbeat, parsed.session_id, now)),
             prompts=parsed.prompts,
             model=parsed.model or models.get(parsed.session_id, ""),
+            terminal=term_map.get(parsed.session_id) or {},
         ))
     return sessions
 
