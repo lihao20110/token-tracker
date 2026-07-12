@@ -61,12 +61,15 @@ _REPORT_COMMANDS: dict[str, tuple[Callable, Callable | None, str, str, bool]] = 
 
 
 def _parse_limit(args: list[str], default: int) -> int:
-    for a in args:
-        try:
-            return int(a)
-        except ValueError:
-            pass
-    return default
+    if not args:
+        return default
+    try:
+        value = int(args[0])
+    except ValueError as exc:
+        raise ValueError(args[0]) from exc
+    if value <= 0:
+        raise ValueError(args[0])
+    return value
 
 
 def _extract_agent_arg(args: list[str]) -> tuple[list[str], str | None]:
@@ -402,6 +405,118 @@ def cmd_theme(args: list[str]) -> None:
         get_console().print(f"[dim]{t('theme_usage')}[/dim]")
 
 
+def _apply_theme_override(name: str | None) -> None:
+    if name is None:
+        return
+    if name not in themes.THEMES:
+        get_console().print(f"[red]{t('theme_unknown', name=name)}[/red]")
+        get_console().print(f"[dim]{t('theme_options', names=', '.join(themes.THEME_NAMES))}[/dim]")
+        sys.exit(1)
+    theme.set_active_theme(name)
+
+
+def _handle_non_data_command(command: str, args: list[str]) -> bool:
+    """处理不需要 Agent 数据的命令；已处理返回 True。"""
+    if command in ("--version", "-v", "-V"):
+        print(f"token-tracker {_get_version()}")
+        print("by stormzhang · https://github.com/stormzhang/token-tracker")
+        return True
+    if command == "theme":
+        cmd_theme(args)
+        return True
+    if command == "setup":
+        _run_setup_flow()
+        return True
+    if command == "unsetup":
+        unsetup()
+        return True
+    return False
+
+
+def _ensure_data_ready() -> None:
+    """数据命令运行前同步脚本、处理升级引导，并确保至少完成过一次 setup。"""
+    configured = is_setup()
+    if configured and needs_update():
+        update_hook()
+    if configured and config.setup_version() < config.SETUP_VERSION:
+        _run_setup_flow()
+    if not is_setup():
+        _run_setup_flow()
+        if not is_setup():
+            sys.exit(1)
+
+
+def _select_agents(filter_agent: str | None):
+    agents = detect_agents()
+    if filter_agent is None:
+        return agents
+    matched = [agent for agent in agents if agent.id == filter_agent]
+    if matched:
+        return matched
+    flag = "--claude" if filter_agent == "claude-code" else "--codex"
+    get_console().print(f"[red]{t('agent_not_detected', flag=flag)}[/red]")
+    sys.exit(1)
+
+
+def _report_agents(agents, command: str, filter_agent: str | None):
+    """daily/weekly 在 Agent 会话内自动收窄；显式 filter 优先。"""
+    if filter_agent is not None or command not in ("daily", "weekly"):
+        return agents
+    session_agent = _current_session_agent()
+    if not session_agent or session_agent not in {agent.id for agent in agents}:
+        return agents
+    return [agent for agent in agents if agent.id == session_agent]
+
+
+def _run_report_command(command: str, args: list[str], agents, filter_agent: str | None) -> None:
+    rest_args, sort_key, sort_desc = _parse_sort_args(args)
+    if command not in _REPORT_COMMANDS:
+        get_console().print(f"[red]{t('unknown_cmd', cmd=command)}[/red]")
+        get_console().print(f"[dim]{t('available_cmds')}[/dim]")
+        sys.exit(1)
+
+    selected = _report_agents(agents, command, filter_agent)
+    agent_names = [agent.name for agent in selected]
+    agg_fn, render_fn, time_attr, no_sort_attr, default_reverse = _REPORT_COMMANDS[command]
+    loaded = _load_per_agent(selected)
+    stats = _aggregate_per_agent(loaded, agg_fn)
+    default_attr = time_attr if sort_key == "time" else no_sort_attr
+
+    if command == "sessions":
+        _render_session_report(stats, rest_args, sort_key, sort_desc,
+                               default_attr, default_reverse, agent_names)
+        return
+
+    assert render_fn is not None  # sessions（render_fn=None）已在上面 return，其余命令都有渲染函数
+    _apply_sort(stats, sort_key, sort_desc, default_attr, default_reverse)
+    if command == "daily":
+        render_fn(stats, agents=agent_names,
+                  weekly=_aggregate_per_agent(loaded, aggregate_weekly),
+                  monthly=_aggregate_per_agent(loaded, aggregate_monthly))
+    elif command == "weekly":
+        render_weekly(stats, agents=agent_names, daily=_aggregate_per_agent(loaded, aggregate_daily))
+    else:  # monthly
+        render_monthly(stats, agents=agent_names,
+                       daily=_aggregate_per_agent(loaded, aggregate_daily),
+                       weekly=_aggregate_per_agent(loaded, aggregate_weekly))
+
+
+def _render_session_report(stats, rest_args: list[str], sort_key: str | None,
+                           sort_desc: bool | None, default_attr: str,
+                           default_reverse: bool, agent_names: list[str]) -> None:
+    # 先按时间取最近 N 条，再按用户指定字段展示；避免历史高 cost 会话长期霸榜。
+    kept = [session for session in stats if session.active_minutes >= 5]
+    kept.sort(key=lambda session: session.start_time, reverse=True)
+    try:
+        limit = _parse_limit(rest_args, default=20)
+    except ValueError as exc:
+        get_console().print(f"[red]{t('sessions_limit_invalid', value=exc.args[0])}[/red]")
+        sys.exit(1)
+    shown = kept[:limit]
+    _apply_sort(shown, sort_key, sort_desc, default_attr, default_reverse)
+    render_sessions_view(_summary_from_sessions(shown), shown, agent_names)
+
+
 def main():
     # --mock：本地开发演示，加载 mock/ 假数据再走正常报表流程（mock/ 在 .gitignore）
     if "--mock" in sys.argv:
@@ -413,64 +528,14 @@ def main():
     args, filter_agent = _extract_agent_arg(args)
     # --theme NAME：临时覆盖主题（仅本次进程、不落配置/不重烘焙状态栏），对所有报表 + status 生效
     args, theme_override = _extract_theme_arg(args)
-    if theme_override is not None:
-        if theme_override not in themes.THEMES:
-            get_console().print(f"[red]{t('theme_unknown', name=theme_override)}[/red]")
-            get_console().print(f"[dim]{t('theme_options', names=', '.join(themes.THEME_NAMES))}[/dim]")
-            sys.exit(1)
-        theme.set_active_theme(theme_override)
+    _apply_theme_override(theme_override)
     command = args[0] if args else "daily"
 
-    # 版本查询不该触发任何文件读写，放在 auto-update 之前短路返回
-    if command in ("--version", "-v", "-V"):
-        print(f"token-tracker {_get_version()}")
-        print("by stormzhang · https://github.com/stormzhang/token-tracker")
+    if _handle_non_data_command(command, args[1:]):
         return
 
-    if command == "theme":
-        cmd_theme(args[1:])
-        return
-
-    # 已配置过的情况下，任意命令都顺带同步状态栏脚本（setup/unsetup 自行处理）
-    # 避免升级 pip 包后忘了 tt setup，导致 ~/.claude/tt-statusline.py 停在旧版本
-    if command not in ("setup", "unsetup") and is_setup() and needs_update():
-        update_hook()
-
-    # 升级感知：新版若新增了值得重配的选项（SETUP_VERSION bump），老用户跑任意命令时
-    # 自动走一遍 setup——_run_setup_flow 内部分流：真终端弹 wizard、会话内 / 非 tty 静默
-    # _auto_setup 用默认值全装（语言跟随系统 / mocha / 组件全开）。两者最终都 save_setup_version()，
-    # 下次启动 setup_version 已是最新、不再触发。
-    if (
-        command not in ("setup", "unsetup")
-        and is_setup()
-        and config.setup_version() < config.SETUP_VERSION
-    ):
-        _run_setup_flow()
-
-    if command == "setup":
-        _run_setup_flow()
-        return
-    if command == "unsetup":
-        unsetup()
-        return
-
-    # 数据命令只看「配没配过」：没配过 → 走 setup 流程（装没装 agent 的检测都在那），
-    # 引导后仍未配置（零 agent / 用户取消）→ 退出。配过则直接往下拿 agents 跑。
-    if not is_setup():
-        _run_setup_flow()
-        if not is_setup():
-            sys.exit(1)
-
-    agents = detect_agents()
-    if filter_agent is not None:
-        # 显式指定 agent：收窄 agents 列表，所有报表命令自动跟随；未装 / 未检测到 → 报错退出
-        matched = [a for a in agents if a.id == filter_agent]
-        if not matched:
-            flag = "--claude" if filter_agent == "claude-code" else "--codex"
-            get_console().print(f"[red]{t('agent_not_detected', flag=flag)}[/red]")
-            sys.exit(1)
-        agents = matched
-    agent_ids = {a.id for a in agents}
+    _ensure_data_ready()
+    agents = _select_agents(filter_agent)
 
     if command in ("status", "dashboard"):
         data = _build_status_data(agents)
@@ -483,55 +548,7 @@ def main():
     if command == "sidebar":
         _cmd_sidebar(agents, args[1:])
         return
-
-    rest_args, sort_key, sort_desc = _parse_sort_args(args[1:])
-
-    if command not in _REPORT_COMMANDS:
-        get_console().print(f"[red]{t('unknown_cmd', cmd=command)}[/red]")
-        get_console().print(f"[dim]{t('available_cmds')}[/dim]")
-        sys.exit(1)
-
-    # daily / weekly 跟随当前会话：CC 会话只看 CC、Codex 会话只看 Codex；
-    # 独立终端（识别不到会话）保持合并所有 agent。显式 --claude / --codex 已在上面收窄 agents、优先级最高。
-    report_agents = agents
-    if filter_agent is None and command in ("daily", "weekly"):
-        session_agent = _current_session_agent()
-        if session_agent and session_agent in agent_ids:
-            report_agents = [a for a in agents if a.id == session_agent]
-    agent_names = [a.name for a in report_agents]
-
-    agg_fn, render_fn, time_attr, no_sort_attr, default_reverse = _REPORT_COMMANDS[command]
-    loaded = _load_per_agent(report_agents)
-    stats = _aggregate_per_agent(loaded, agg_fn)
-    default_attr = time_attr if sort_key == "time" else no_sort_attr
-
-    if command == "sessions":
-        # sessions 看「最近的会话」：先过滤掉活跃 <5min 的碎片会话（与 tt status 同口径，
-        # 见 types.SessionStats.active_minutes），再按时间取最近 N 条（否则史上高 cost 会话
-        # 恒久霸榜、新会话和低成本 agent 永远进不了榜），这 N 条再按 cost（或 --sort）展示
-        kept = [s for s in stats if s.active_minutes >= 5]
-        kept.sort(key=lambda s: s.start_time, reverse=True)
-        shown = kept[:_parse_limit(rest_args, default=20)]
-        _apply_sort(shown, sort_key, sort_desc, default_attr, default_reverse)
-        render_sessions_view(_summary_from_sessions(shown), shown, agent_names)
-        return
-
-    assert render_fn is not None  # sessions（render_fn=None）已在上面 return，其余命令都有渲染函数
-    _apply_sort(stats, sort_key, sort_desc, default_attr, default_reverse)
-    if command == "daily":
-        # daily 顶部三卡片：Last 12 months + This Month + This Week，跟 weekly/monthly 同款样式、
-        # 复用 _render_month_summary / _render_week_summary。weekly/monthly 聚合复用同一份 entries。
-        render_fn(stats, agents=agent_names,
-                  weekly=_aggregate_per_agent(loaded, aggregate_weekly),
-                  monthly=_aggregate_per_agent(loaded, aggregate_monthly))
-    elif command == "weekly":
-        render_weekly(stats, agents=agent_names, daily=_aggregate_per_agent(loaded, aggregate_daily))
-    elif command == "monthly":
-        render_monthly(stats, agents=agent_names,
-                       daily=_aggregate_per_agent(loaded, aggregate_daily),
-                       weekly=_aggregate_per_agent(loaded, aggregate_weekly))
-    else:
-        render_fn(stats, agents=agent_names)
+    _run_report_command(command, args[1:], agents, filter_agent)
 
 
 if __name__ == "__main__":

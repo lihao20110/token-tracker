@@ -72,7 +72,7 @@ Codex 官方暂不支持自定义 StatusLine。Token Tracker 通过 hook 注入�
 
 ## 报表速览
 
-`tt status` — 过去 5h 实时面板（合并概览 + 5h/7d 额度 + 近期会话）
+`tt status` — 今日实时面板（今日合并概览 + 5h/7d 额度 + 今日会话）
 
 ![Status](assets/screenshot.png)
 
@@ -124,10 +124,10 @@ curl -sSL https://raw.githubusercontent.com/stormzhang/token-tracker/main/instal
 tt setup          # 交互配置向导（终端：上下键选语言 / 主题 / 各组件）；非 tty 环境按推荐默认自动配置
 tt                # 过去一年 token 热力图 + 顶部三段概览（= tt daily）
 tt daily          # 同上（tt 无参即进 daily）
-tt status         # 过去 5h 实时面板
+tt status         # 今日消耗、5h/7d 额度与今日会话
 tt weekly         # 周报
 tt monthly        # 月报
-tt sessions       # 最近 20 条会话明细（tt sessions <n> 改条数、--sort 改排序）
+tt sessions       # 最近 20 条会话明细（tt sessions <正整数> 改条数、--sort 改排序）
 tt sidebar        # 常驻侧边栏：活跃会话总览 + 提示词历史 + 状态灯 + 点击跳转（--once 一帧快照）
 tt theme          # 查看 / 切换配色主题（show / list / set / preview）
 tt unsetup        # 卸载并恢复安装前的配置

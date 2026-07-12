@@ -10,6 +10,7 @@ _STRINGS = {
         "unknown_cmd": "未知命令: {cmd}",
         "agent_filter_conflict": "--claude 与 --codex 互斥，只能指定其中一个",
         "agent_not_detected": "未检测到 {flag} 的使用数据，请先在该 agent 中使用后再查询",
+        "sessions_limit_invalid": "会话条数必须是正整数，收到: {value}",
         "available_cmds": "可用命令: status, daily, weekly, monthly, sessions, sidebar, theme, setup, unsetup, --version",
         # --- sidebar（cli.py / ui/sidebar.py）---
         "sidebar_empty": "窗口期内没有活跃会话",
@@ -55,7 +56,6 @@ _STRINGS = {
         "theme_usage": "用法: tt theme [show | list | set <主题名> | preview <主题名>]",
         # --- wizard (wizard.py) ---
         "wizard_pick_theme": "选择配色主题",
-        "wizard_theme_prompt": "选择主题",
         "wizard_q_cc_statusline": "接管 Claude Code 状态栏",
         "wizard_q_codex_statusline": "启用 Codex 伪 statusline",
         "theme_recommended": "（推荐）",
@@ -100,6 +100,7 @@ _STRINGS = {
         "unknown_cmd": "Unknown command: {cmd}",
         "agent_filter_conflict": "--claude and --codex are mutually exclusive; please pick one",
         "agent_not_detected": "No usage data for {flag}; use it in that agent first, then query again",
+        "sessions_limit_invalid": "Session count must be a positive integer, got: {value}",
         "available_cmds": "Available commands: status, daily, weekly, monthly, sessions, sidebar, theme, setup, unsetup, --version",
         # --- sidebar（cli.py / ui/sidebar.py）---
         "sidebar_empty": "No active sessions in the window",
@@ -145,7 +146,6 @@ _STRINGS = {
         "theme_usage": "Usage: tt theme [show | list | set <name> | preview <name>]",
         # --- wizard (wizard.py) ---
         "wizard_pick_theme": "Pick a theme",
-        "wizard_theme_prompt": "Pick a theme",
         "wizard_q_cc_statusline": "Take over Claude Code status line",
         "wizard_q_codex_statusline": "Enable Codex faux statusline",
         "theme_recommended": "(recommended)",

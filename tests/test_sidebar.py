@@ -219,10 +219,24 @@ def test_scan_claude_uses_cache_for_unchanged_file(tmp_path, monkeypatch):
     now = datetime.now(UTC)
     cutoff = now - timedelta(hours=12)
     assert len(_scan_claude_sessions(cutoff, now, None, 3, dirs=[str(base)])) == 1
-    # 文件未变 → 第二次扫描不再触发解析（mtime+size 缓存命中）
+    # 文件未变 → 第二次扫描不再触发解析（mtime+size+max_prompts 缓存命中）
     monkeypatch.setattr(sidebar, "_parse_claude",
                         lambda *a, **k: pytest.fail("cache miss: reparsed unchanged file"))
     assert len(_scan_claude_sessions(cutoff, now, None, 3, dirs=[str(base)])) == 1
+
+
+def test_scan_claude_cache_isolated_by_max_prompts(tmp_path):
+    base = _make_claude_base(tmp_path)
+    d = base / "-Users-x-project-alpha"
+    _write_jsonl(d / "s.jsonl", [_u(f"提示词{i}") for i in range(5)])
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(hours=12)
+
+    first = _scan_claude_sessions(cutoff, now, None, 2, dirs=[str(base)])
+    second = _scan_claude_sessions(cutoff, now, None, 4, dirs=[str(base)])
+
+    assert [p.text for p in first[0].prompts] == ["提示词3", "提示词4"]
+    assert [p.text for p in second[0].prompts] == ["提示词1", "提示词2", "提示词3", "提示词4"]
 
 
 def test_scan_sessions_caps_at_max_sessions(monkeypatch):

@@ -205,6 +205,13 @@ def test_fresh_cache_is_used_without_fetching(tmp_path, monkeypatch):
     assert cost._load_pricing() == {"gpt-5": {"input_cost_per_token": 1e-6}}
 
 
+def test_valid_json_with_wrong_shape_is_not_a_cache(tmp_path, monkeypatch):
+    cache = tmp_path / "pricing_cache.json"
+    cache.write_text('["not", "a", "pricing", "mapping"]', encoding="utf-8")
+    monkeypatch.setattr(cost, "CACHE_PATH", cache)
+    assert cost._read_cache() is None
+
+
 def test_stale_cache_kept_when_fetch_fails(tmp_path, monkeypatch):
     # 关键：缓存过期但联网失败时，应保留旧缓存而非掉到内置兜底
     cache = tmp_path / "pricing_cache.json"

@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .types import AgentInfo, UsageEntry
-from .util import claude_home, iter_jsonl_dicts, project_from_cwd
+from .util import claude_home, file_may_have_events_since, iter_jsonl_dicts, project_from_cwd
 
 CLAUDE_DIRS = [
     os.path.join(claude_home(), "projects"),
@@ -31,6 +31,8 @@ def load_entries(hours_back: int = 0) -> list[UsageEntry]:
         if not base.is_dir():
             continue
         for jsonl_path in base.rglob("*.jsonl"):
+            if not file_may_have_events_since(jsonl_path, cutoff):
+                continue
             fallback_project = _extract_project_from_dir(jsonl_path, base)
             _parse_jsonl(jsonl_path, fallback_project, entries, seen, cutoff)
 

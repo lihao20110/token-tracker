@@ -4,7 +4,6 @@
 本模块聚焦 weekly/monthly 两类报表的组装。
 """
 
-import calendar
 from collections.abc import Callable
 from datetime import datetime, timedelta
 
@@ -28,6 +27,7 @@ from .format import (
     append_metric,
     brand_line,
 )
+from .report_stats import merge_months, merge_weeks, month_span
 from .theme import _S
 
 __all__ = [
@@ -42,7 +42,7 @@ def render_weekly(stats: list[WeeklyStats], agents: list[str] | None = None,
         get_console().print(f"[{_S.warn}]{t('no_data')}[/{_S.warn}]")
         return
 
-    weeks = _merge_weeks(stats)
+    weeks = merge_weeks(stats)
     cur = weeks[-1]
     prev = weeks[-2] if len(weeks) >= 2 else None
 
@@ -168,28 +168,6 @@ def _render_weekly_barchart(weeks: list[WeeklyStats], weeks_back: int = 30, heig
     get_console().print()
 
 
-def _merge_weeks(stats: list[WeeklyStats]) -> list[WeeklyStats]:
-    """跨 agent 合并同一周（多 agent 时每周多条），按周升序返回。"""
-    merged: dict[str, WeeklyStats] = {}
-    for s in stats:
-        m = merged.get(s.week)
-        if m is None:
-            m = merged[s.week] = WeeklyStats(week=s.week, week_start=s.week_start, week_end=s.week_end)
-        m.input_tokens += s.input_tokens
-        m.output_tokens += s.output_tokens
-        m.cache_creation_tokens += s.cache_creation_tokens
-        m.cache_read_tokens += s.cache_read_tokens
-        m.total_tokens += s.total_tokens
-        m.cost_usd += s.cost_usd
-        m.session_count += s.session_count
-        m.message_count += s.message_count
-        for k, v in s.models.items():
-            m.models[k] = m.models.get(k, 0) + v
-        for k, v in s.projects.items():
-            m.projects[k] = m.projects.get(k, 0) + v
-    return [merged[k] for k in sorted(merged)]
-
-
 def _darken(color: str, factor: float = 0.6) -> str:
     """把 #RRGGBB 按 factor 压暗（保持色相），用于突出排第一的项。"""
     h = color.lstrip("#")
@@ -284,37 +262,6 @@ def _render_distribution(title: str, name_col: str, data: dict[str, int],
     get_console().print(Padding(table, (0, 0, 0, 2), expand=False))
 
 
-def _merge_months(stats: list[MonthlyStats]) -> list[MonthlyStats]:
-    """跨 agent 合并同一月（多 agent 时每月多条），按月升序返回。"""
-    merged: dict[str, MonthlyStats] = {}
-    for s in stats:
-        m = merged.get(s.month)
-        if m is None:
-            m = merged[s.month] = MonthlyStats(month=s.month)
-        m.input_tokens += s.input_tokens
-        m.output_tokens += s.output_tokens
-        m.cache_creation_tokens += s.cache_creation_tokens
-        m.cache_read_tokens += s.cache_read_tokens
-        m.total_tokens += s.total_tokens
-        m.cost_usd += s.cost_usd
-        m.session_count += s.session_count
-        m.message_count += s.message_count
-        for k, v in s.models.items():
-            m.models[k] = m.models.get(k, 0) + v
-        for k, v in s.projects.items():
-            m.projects[k] = m.projects.get(k, 0) + v
-    return [merged[k] for k in sorted(merged)]
-
-
-def _month_span(month: str) -> tuple[int, int]:
-    """返回 (本月总天数, 已过天数)：当前月按今天、历史月按整月。month 形如 '2026-06'。"""
-    year, mon = int(month[:4]), int(month[5:7])
-    total = calendar.monthrange(year, mon)[1]
-    today = datetime.now(system_tz()).date()
-    elapsed = today.day if (year, mon) == (today.year, today.month) else total
-    return total, elapsed
-
-
 def _render_month_summary(cur: MonthlyStats, prev: MonthlyStats | None, agents: list[str],
                           active_days: int) -> None:
     """本月分析卡片：品牌行 + 分割线 + 月份；第二行 Tokens/Cost/Avg·Cost（橙）、
@@ -324,9 +271,9 @@ def _render_month_summary(cur: MonthlyStats, prev: MonthlyStats | None, agents: 
     body.append("This Month", style=f"bold {_S.good}")
     body.append(f"  {cur.month}", style=f"dim {_S.good}")
     body.append("\n")
-    days_in_month, elapsed = _month_span(cur.month)
+    days_in_month, elapsed = month_span(cur.month)
     cur_avg = cur.cost_usd / max(1, elapsed)
-    prev_avg = prev.cost_usd / max(1, _month_span(prev.month)[0]) if prev else None
+    prev_avg = prev.cost_usd / max(1, month_span(prev.month)[0]) if prev else None
     # 第二行（橙）：Tokens / Cost / Avg/Cost（日均花费）
     append_metric(body, "Tokens", _fmt_tokens(cur.total_tokens), _S.peach,
                   cur.total_tokens, prev.total_tokens if prev else None)
@@ -374,7 +321,7 @@ def render_monthly(stats: list[MonthlyStats], agents: list[str] | None = None,
         get_console().print(f"[{_S.warn}]{t('no_data')}[/{_S.warn}]")
         return
 
-    months = _merge_months(stats)
+    months = merge_months(stats)
     cur = months[-1]
     prev = months[-2] if len(months) >= 2 else None
 
@@ -382,7 +329,7 @@ def render_monthly(stats: list[MonthlyStats], agents: list[str] | None = None,
         active_days = len({d.date for d in daily if d.date.startswith(cur.month)}) if daily else 0
         _render_month_summary(cur, prev, agents or ["Claude Code"], active_days)
         if weekly:
-            _render_weekly_barchart(_merge_weeks(weekly))
+            _render_weekly_barchart(merge_weeks(weekly))
         _render_monthly_trend(months)
         _render_distribution("Project Trend", "Project", cur.projects, _project_short, _S.pink, min_pct=2)
         _render_distribution("Model Trend", "Model", cur.models, _model_short, _S.blue, min_pct=2)

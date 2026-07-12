@@ -152,7 +152,8 @@ def _load_pricing() -> dict:
 def _read_cache() -> dict | None:
     try:
         with open(CACHE_PATH, encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
     except (OSError, json.JSONDecodeError):
         return None
 

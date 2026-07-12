@@ -3,6 +3,7 @@
 import json
 import os
 from collections.abc import Iterator
+from datetime import datetime
 from pathlib import Path
 
 
@@ -43,6 +44,20 @@ def iter_jsonl_dicts(path: Path | str) -> Iterator[dict]:
                     yield data
     except OSError:
         return
+
+
+def file_may_have_events_since(path: Path, cutoff: datetime | None) -> bool:
+    """文件是否可能包含 cutoff 之后的事件；无窗口时放行，文件消失时跳过。
+
+    JSONL 只追加写，事件时间不会晚于文件 mtime，因此 mtime 早于 cutoff 的文件可在逐行解析前
+    安全排除。mtime 新只代表“可能有”，仍由解析器按事件时间做最终过滤。
+    """
+    if cutoff is None:
+        return True
+    try:
+        return path.stat().st_mtime >= cutoff.timestamp()
+    except OSError:
+        return False
 
 
 def project_from_cwd(cwd: str) -> str:

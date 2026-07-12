@@ -31,7 +31,9 @@ def test_heat_thresholds_all_zero():
     assert _heat_thresholds([0, 0]) == [1, 1, 1]
 
 
-def test_render_heatmap_outputs_truecolor(capsys):
+def test_render_heatmap_outputs_truecolor(capsys, monkeypatch):
+    # 产品明确尊重 NO_COLOR；本用例只验证真彩渲染，必须隔离调用环境里的全局禁色变量。
+    monkeypatch.delenv("NO_COLOR", raising=False)
     # 用相对当天的近期日期，保证数据落在最近一年范围内、能渲染出多档绿
     today = datetime.now(UTC).date()
     stats = [

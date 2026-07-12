@@ -1,5 +1,15 @@
+import pytest
+
 from token_tracker import cli
 from token_tracker.adapters.types import DailyStats
+
+
+def test_parse_limit_accepts_positive_integer_only():
+    assert cli._parse_limit([], default=20) == 20
+    assert cli._parse_limit(["5"], default=20) == 5
+    for value in ("0", "-1", "abc"):
+        with pytest.raises(ValueError):
+            cli._parse_limit([value], default=20)
 
 
 def test_apply_sort_by_tokens_uses_authoritative_attr():
@@ -49,7 +59,6 @@ def test_extract_agent_arg_maps_flags_to_ids():
 
 def test_extract_agent_arg_conflict_exits(monkeypatch, capsys):
     # --claude 与 --codex 同时给 → 直接 sys.exit(1) + 中文/英文提示
-    import pytest
     with pytest.raises(SystemExit) as e:
         cli._extract_agent_arg(["--claude", "--codex", "daily"])
     assert e.value.code == 1
@@ -86,8 +95,6 @@ def test_cli_agent_flag_filters_agents(monkeypatch):
 def test_cli_agent_flag_missing_agent_exits(monkeypatch):
     # 显式 --codex 但环境里没装 Codex（只检测到 CC）→ sys.exit(1) + 友好错误
     from types import SimpleNamespace
-
-    import pytest
 
     from token_tracker import config
     monkeypatch.setattr(cli, "is_setup", lambda: True)

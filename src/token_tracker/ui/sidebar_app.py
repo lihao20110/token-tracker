@@ -6,7 +6,7 @@
 走终端 ANSI 调色板、不糊 Textual 自己的深色底；正文内容色仍由 tt 主题（`_S` 运行时代理）给，
 `tt sidebar --theme <名>` 可临时切。明暗跟随 tt 主题的 is_light。
 本模块 import textual，cli 只在 live 模式延迟 import（照 questionary 先例，日常 tt 启动不加载）。
-点击跳转到对应终端窗格（需 statusline 携带 ITERM_SESSION_ID / TMUX_PANE 映射）留下一迭代。
+点击跳转依赖 statusline 携带 ITERM_SESSION_ID / TMUX_PANE 映射；tmux 与 iTerm2 已支持。
 """
 
 import subprocess
@@ -127,7 +127,7 @@ class SidebarApp(App[None]):
 
     def _tick_spinner(self) -> None:
         """动画/时钟帧：0.5s 重绘一次（纯内存渲染，5s 的磁盘扫描节奏不变）——
-        运行中星形轮转 + 头部双时区时钟的秒针都靠它走。"""
+        运行中星形轮转 + 头部三时区时钟的秒针都靠它走。"""
         self._frame += 1
         self._update_body()
 

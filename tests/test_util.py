@@ -1,4 +1,9 @@
-from token_tracker.adapters.util import project_from_cwd
+import os
+import time
+from datetime import UTC, datetime, timedelta
+
+from token_tracker.adapters import claude, codex
+from token_tracker.adapters.util import file_may_have_events_since, project_from_cwd
 
 
 def test_project_from_cwd_git_root(tmp_path):
@@ -32,3 +37,47 @@ def test_project_from_cwd_non_git_fallback(tmp_path):
     d = tmp_path / "loose" / "folder"
     d.mkdir(parents=True)
     assert project_from_cwd(str(d)) == "folder"
+
+
+def test_file_may_have_events_since_uses_mtime(tmp_path):
+    path = tmp_path / "session.jsonl"
+    path.write_text("{}\n")
+    now = datetime.now(UTC)
+    os.utime(path, (time.time() - 7200, time.time() - 7200))
+    assert file_may_have_events_since(path, now - timedelta(hours=1)) is False
+    assert file_may_have_events_since(path, None) is True
+
+
+def test_claude_window_skips_stale_files_before_parsing(tmp_path, monkeypatch):
+    base = tmp_path / "projects"
+    base.mkdir()
+    stale = base / "stale.jsonl"
+    recent = base / "recent.jsonl"
+    stale.write_text("{}\n")
+    recent.write_text("{}\n")
+    os.utime(stale, (time.time() - 7200, time.time() - 7200))
+    parsed: list[str] = []
+    monkeypatch.setattr(claude, "_get_claude_dirs", lambda: [str(base)])
+    monkeypatch.setattr(claude, "_parse_jsonl", lambda path, *args: parsed.append(path.name))
+
+    claude.load_entries(hours_back=1)
+
+    assert parsed == ["recent.jsonl"]
+
+
+def test_codex_window_skips_stale_files_before_parsing(tmp_path, monkeypatch):
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    stale = sessions / "stale.jsonl"
+    recent = sessions / "recent.jsonl"
+    stale.write_text("{}\n")
+    recent.write_text("{}\n")
+    os.utime(stale, (time.time() - 7200, time.time() - 7200))
+    parsed: list[str] = []
+    monkeypatch.setattr(codex, "SESSIONS_DIR", str(sessions))
+    monkeypatch.setattr(codex, "_load_thread_models", lambda: {})
+    monkeypatch.setattr(codex, "_parse_jsonl", lambda path, *args: parsed.append(path.name))
+
+    codex.load_entries(hours_back=1)
+
+    assert parsed == ["recent.jsonl"]

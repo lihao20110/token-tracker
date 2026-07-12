@@ -60,13 +60,13 @@ class LiveSession:
     agent_id: str
     session_id: str
     project: str
-    last_activity: datetime                       # transcript mtime（UTC aware）
+    last_activity: datetime                       # 最后一条有效内容事件时间（UTC aware）
     state: str
     prompts: list[Prompt] = field(default_factory=list)  # 时间正序，最后一条最新
     model: str = ""
     branch: str = ""  # git 分支（CC=transcript 自带 gitBranch；codex=session_meta.git.branch）
     terminal: dict = field(default_factory=dict)  # 终端定位 {"iterm": ..., "tmux": ...}（statusline 采集），空=不可跳转
-    next_hint: str = ""  # 「下一步」提示：末条 assistant 回复的最后一行（通常是建议/追问），无则空
+    next_hint: str = ""  # 「下一步」提示：结构化待回答问题或末段规则提取结果，无则空
 
 
 @dataclass
@@ -85,8 +85,33 @@ class _Parsed:
     last_event: datetime | None = None
 
 
-# 按 (mtime, size) 缓存解析结果：常驻刷新时只重解析有变化的文件
-_parse_cache: dict[str, tuple[float, int, _Parsed]] = {}
+@dataclass
+class _ClaudeParseState:
+    session_id: str
+    project: str
+    prompts: list[Prompt] = field(default_factory=list)
+    pending_tool: bool = False
+    model: str = ""
+    last_reply: str = ""
+    pending_question: str = ""
+    last_event: datetime | None = None
+    branch: str = ""
+
+
+@dataclass
+class _CodexParseState:
+    session_id: str = ""
+    project: str = "unknown"
+    prompts: list[Prompt] = field(default_factory=list)
+    pending_task: bool = False
+    last_reply: str = ""
+    last_event: datetime | None = None
+    branch: str = ""
+
+
+# 按 (path, max_prompts) → (mtime, size, result) 缓存：相同条数且文件未变才复用。
+# 解析结果已经按 max_prompts 截断，参数必须进 key，避免先查 2 条后再查 5 条仍只返回 2 条。
+_parse_cache: dict[tuple[str, int], tuple[float, int, _Parsed]] = {}
 
 
 def scan_sessions(hours_back: int = DEFAULT_HOURS_BACK,
@@ -158,26 +183,26 @@ def _heartbeat_fresh(heartbeat: tuple[str, datetime] | None, session_id: str, no
             and (now - heartbeat[1]).total_seconds() < HEARTBEAT_FRESH_S)
 
 
-def _cache_get(path: Path) -> tuple[float, _Parsed | None]:
+def _cache_get(path: Path, max_prompts: int) -> tuple[float, _Parsed | None]:
     """返回 (mtime, 缓存命中的解析结果)；未命中返回 (mtime, None)。文件消失返回 (0, None)。"""
     try:
         st = path.stat()
     except OSError:
         return 0.0, None
-    hit = _parse_cache.get(str(path))
+    hit = _parse_cache.get((str(path), max_prompts))
     if hit and hit[0] == st.st_mtime and hit[1] == st.st_size:
         return st.st_mtime, hit[2]
     return st.st_mtime, None
 
 
-def _cache_put(path: Path, parsed: _Parsed) -> None:
+def _cache_put(path: Path, max_prompts: int, parsed: _Parsed) -> None:
     if len(_parse_cache) > _CACHE_MAX:
         _parse_cache.clear()
     try:
         st = path.stat()
     except OSError:
         return
-    _parse_cache[str(path)] = (st.st_mtime, st.st_size, parsed)
+    _parse_cache[(str(path), max_prompts)] = (st.st_mtime, st.st_size, parsed)
 
 
 # --- Claude Code ---
@@ -196,7 +221,7 @@ def _scan_claude_sessions(cutoff: datetime, now: datetime,
         if not base.is_dir():
             continue
         for path in base.rglob("*.jsonl"):
-            mtime, parsed = _cache_get(path)
+            mtime, parsed = _cache_get(path, max_prompts)
             if mtime <= 0:
                 continue
             mtime_dt = datetime.fromtimestamp(mtime, UTC)
@@ -207,7 +232,7 @@ def _scan_claude_sessions(cutoff: datetime, now: datetime,
                 parsed = _parse_claude(path, fallback, max_prompts)
                 if parsed is None:
                     continue
-                _cache_put(path, parsed)
+                _cache_put(path, max_prompts, parsed)
             if not parsed.prompts or parsed.session_id in seen:
                 continue
             # 权威活动时间 = 内容里最后一条有效事件；CC 会对闲置会话做不改内容的 mtime 触碰
@@ -232,77 +257,75 @@ def _scan_claude_sessions(cutoff: datetime, now: datetime,
 
 
 def _parse_claude(path: Path, fallback_project: str, max_prompts: int) -> _Parsed | None:
-    session_id = path.stem
-    project = fallback_project
-    prompts: list[Prompt] = []
-    pending_tool = False
-    model = ""
-    last_reply = ""
-    pending_question = ""  # 待回答的 AskUserQuestion（任何后续用户动作即视为不再待决）
-    last_event: datetime | None = None
-    branch = ""
+    state = _ClaudeParseState(session_id=path.stem, project=fallback_project)
     for data in iter_jsonl_dicts(path):
         if data.get("isSidechain"):  # 子代理 sidechain 的消息不是主人敲的提示词
             continue
-        branch = data.get("gitBranch") or branch
+        state.branch = data.get("gitBranch") or state.branch
         dtype = data.get("type")
         if dtype == "user":
-            sid = data.get("sessionId")
-            if sid:
-                session_id = sid
-            cwd = data.get("cwd")
-            if cwd:
-                project = project_from_cwd(cwd)
-            # compact 摘要（isCompactSummary）等注入消息不是主人敲的：不进提示词、
-            # 不消费 pending_question（压缩≠回答了提问）、不计活动时间
-            if (data.get("isMeta") or data.get("isCompactSummary")
-                    or data.get("isVisibleInTranscriptOnly")):
-                continue
-            message = data.get("message")
-            if not isinstance(message, dict):
-                continue
-            pending_question = ""  # 回答/新提示/打断，提问已被消费
-            content = message.get("content")
-            if _is_tool_result(content):
-                pending_tool = False
-                last_event = _parse_ts(data.get("timestamp")) or last_event
-                continue
-            text = _claude_prompt_text(content)
-            if text is None:  # 注入通知/命令记录等：不算「主人动过」，不计活动时间
-                continue
-            ts = _parse_ts(data.get("timestamp"))
-            prompts.append(Prompt(text=text, timestamp=ts))
-            last_event = ts or last_event
-            pending_tool = False
+            _consume_claude_user(data, state)
         elif dtype == "assistant":
-            message = data.get("message")
-            if not isinstance(message, dict):
-                continue
-            last_event = _parse_ts(data.get("timestamp")) or last_event
-            model = message.get("model") or model
-            content = message.get("content")
-            reply = ""
-            if isinstance(content, list):
-                pending_tool = any(isinstance(i, dict) and i.get("type") == "tool_use" for i in content)
-                for item in content:
-                    if (isinstance(item, dict) and item.get("type") == "tool_use"
-                            and item.get("name") == "AskUserQuestion"):
-                        q = _format_question(item.get("input") or {})
-                        pending_question = q or pending_question
-                parts = [i.get("text", "") for i in content
-                         if isinstance(i, dict) and i.get("type") == "text"]
-                reply = "\n".join(p for p in parts if p)
-            elif isinstance(content, str):
-                pending_tool = False
-                reply = content
-            if reply.strip():
-                last_reply = reply
-    if not prompts:
+            _consume_claude_assistant(data, state)
+    if not state.prompts:
         return None
     # 「下一步」优先级链：结构化提问（待回答，零猜测）> 句子打分精简 > 末行兜底
-    return _Parsed(session_id, project, prompts[-max_prompts:], pending_tool, model,
-                   branch=branch, next_hint=pending_question or _hint_text(last_reply),
-                   last_event=last_event)
+    return _Parsed(state.session_id, state.project, state.prompts[-max_prompts:], state.pending_tool, state.model,
+                   branch=state.branch, next_hint=state.pending_question or _hint_text(state.last_reply),
+                   last_event=state.last_event)
+
+
+def _consume_claude_user(data: dict, state: _ClaudeParseState) -> None:
+    sid = data.get("sessionId")
+    if sid:
+        state.session_id = sid
+    cwd = data.get("cwd")
+    if cwd:
+        state.project = project_from_cwd(cwd)
+    # compact 摘要等注入消息不是主人敲的：不进提示词、不消费待决提问、不计活动时间
+    if data.get("isMeta") or data.get("isCompactSummary") or data.get("isVisibleInTranscriptOnly"):
+        return
+    message = data.get("message")
+    if not isinstance(message, dict):
+        return
+    state.pending_question = ""  # 回答/新提示/打断，提问已被消费
+    content = message.get("content")
+    if _is_tool_result(content):
+        state.pending_tool = False
+        state.last_event = _parse_ts(data.get("timestamp")) or state.last_event
+        return
+    text = _claude_prompt_text(content)
+    if text is None:  # 注入通知/命令记录等：不算「主人动过」，不计活动时间
+        return
+    ts = _parse_ts(data.get("timestamp"))
+    state.prompts.append(Prompt(text=text, timestamp=ts))
+    state.last_event = ts or state.last_event
+    state.pending_tool = False
+
+
+def _consume_claude_assistant(data: dict, state: _ClaudeParseState) -> None:
+    message = data.get("message")
+    if not isinstance(message, dict):
+        return
+    state.last_event = _parse_ts(data.get("timestamp")) or state.last_event
+    state.model = message.get("model") or state.model
+    content = message.get("content")
+    reply = ""
+    if isinstance(content, list):
+        state.pending_tool = any(isinstance(item, dict) and item.get("type") == "tool_use" for item in content)
+        for item in content:
+            if (isinstance(item, dict) and item.get("type") == "tool_use"
+                    and item.get("name") == "AskUserQuestion"):
+                question = _format_question(item.get("input") or {})
+                state.pending_question = question or state.pending_question
+        parts = [item.get("text", "") for item in content
+                 if isinstance(item, dict) and item.get("type") == "text"]
+        reply = "\n".join(part for part in parts if part)
+    elif isinstance(content, str):
+        state.pending_tool = False
+        reply = content
+    if reply.strip():
+        state.last_reply = reply
 
 
 def _is_tool_result(content: object) -> bool:
@@ -346,7 +369,7 @@ def _scan_codex_sessions(cutoff: datetime, now: datetime,
     sessions: list[LiveSession] = []
     seen: set[str] = set()
     for path in base.rglob("*.jsonl"):
-        mtime, parsed = _cache_get(path)
+        mtime, parsed = _cache_get(path, max_prompts)
         if mtime <= 0:
             continue
         mtime_dt = datetime.fromtimestamp(mtime, UTC)
@@ -356,7 +379,7 @@ def _scan_codex_sessions(cutoff: datetime, now: datetime,
             parsed = _parse_codex(path, max_prompts)
             if parsed is None:
                 continue
-            _cache_put(path, parsed)
+            _cache_put(path, max_prompts, parsed)
         if not parsed.prompts or parsed.session_id in seen:
             continue
         last_activity = parsed.last_event or mtime_dt
@@ -380,47 +403,49 @@ def _scan_codex_sessions(cutoff: datetime, now: datetime,
 
 
 def _parse_codex(path: Path, max_prompts: int) -> _Parsed | None:
-    session_id = ""
-    project = "unknown"
-    prompts: list[Prompt] = []
-    pending_task = False
-    last_reply = ""
-    last_event: datetime | None = None
-    branch = ""
+    state = _CodexParseState()
     for data in iter_jsonl_dicts(path):
         payload = data.get("payload")
         if not isinstance(payload, dict):
             continue
         ts = _parse_ts(data.get("timestamp"))
-        if ts and (last_event is None or ts > last_event):
-            last_event = ts
+        if ts and (state.last_event is None or ts > state.last_event):
+            state.last_event = ts
         dtype = data.get("type")
         if dtype == "session_meta":
-            session_id = payload.get("id", "") or session_id
-            cwd = payload.get("cwd", "")
-            if cwd:
-                project = project_from_cwd(cwd)
-            git = payload.get("git")
-            if isinstance(git, dict) and git.get("branch"):
-                branch = git["branch"]
+            _consume_codex_meta(payload, state)
         elif dtype == "event_msg":
-            ptype = payload.get("type")
-            if ptype == "user_message":
-                text = (payload.get("message") or "").strip()
-                if text and not text.startswith(_CODEX_SKIP_PREFIXES):
-                    prompts.append(Prompt(text=text, timestamp=_parse_ts(data.get("timestamp"))))
-            elif ptype == "agent_message":
-                reply = payload.get("message") or ""
-                if reply.strip():
-                    last_reply = reply
-            elif ptype == "task_started":
-                pending_task = True
-            elif ptype in ("task_complete", "turn_aborted"):
-                pending_task = False
-    if not prompts:
+            _consume_codex_event(payload, ts, state)
+    if not state.prompts:
         return None
-    return _Parsed(session_id or path.stem, project, prompts[-max_prompts:], pending_task,
-                   branch=branch, next_hint=_hint_text(last_reply), last_event=last_event)
+    return _Parsed(state.session_id or path.stem, state.project, state.prompts[-max_prompts:], state.pending_task,
+                   branch=state.branch, next_hint=_hint_text(state.last_reply), last_event=state.last_event)
+
+
+def _consume_codex_meta(payload: dict, state: _CodexParseState) -> None:
+    state.session_id = payload.get("id", "") or state.session_id
+    cwd = payload.get("cwd", "")
+    if cwd:
+        state.project = project_from_cwd(cwd)
+    git = payload.get("git")
+    if isinstance(git, dict) and git.get("branch"):
+        state.branch = git["branch"]
+
+
+def _consume_codex_event(payload: dict, ts: datetime | None, state: _CodexParseState) -> None:
+    event_type = payload.get("type")
+    if event_type == "user_message":
+        text = (payload.get("message") or "").strip()
+        if text and not text.startswith(_CODEX_SKIP_PREFIXES):
+            state.prompts.append(Prompt(text=text, timestamp=ts))
+    elif event_type == "agent_message":
+        reply = payload.get("message") or ""
+        if reply.strip():
+            state.last_reply = reply
+    elif event_type == "task_started":
+        state.pending_task = True
+    elif event_type in ("task_complete", "turn_aborted"):
+        state.pending_task = False
 
 
 _HINT_MAX_LINES = 5   # 「下一步」显示上限（AskUserQuestion 格式化路径用；打分路径上限 3）

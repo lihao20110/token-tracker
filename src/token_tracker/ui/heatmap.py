@@ -20,7 +20,7 @@ from ..i18n import t
 from ..tz import system_tz
 from .console import forced_color_console, get_console
 from .format import _fmt_cost, _fmt_tokens, append_metric, brand_line, emit_metrics
-from .tables import _merge_months, _merge_weeks, _month_span
+from .report_stats import merge_months, merge_weeks, month_span
 from .theme import _S, _heat_level, _heat_thresholds, heat_greens
 
 _WEEKS = 53
@@ -96,12 +96,12 @@ def _render_summary(stats: list[DailyStats], agents: list[str] | None,
 
     # --- Section 2：This Month（Tokens / Cost / Avg/Cost 带环比 + 活跃天数 X/月总天数） ---
     if monthly:
-        months = _merge_months(monthly)
+        months = merge_months(monthly)
         cur_m = months[-1]
         prev_m = months[-2] if len(months) >= 2 else None
-        days_in_m, elapsed_m = _month_span(cur_m.month)
+        days_in_m, elapsed_m = month_span(cur_m.month)
         cur_m_avg = cur_m.cost_usd / max(1, elapsed_m)
-        prev_m_avg = prev_m.cost_usd / max(1, _month_span(prev_m.month)[0]) if prev_m else None
+        prev_m_avg = prev_m.cost_usd / max(1, month_span(prev_m.month)[0]) if prev_m else None
         active_m = len({s.date for s in stats if s.date.startswith(cur_m.month)})
         body_m = _period_section("This Month", cur_m.month, cur_m, prev_m,
                                  cur_m_avg, prev_m_avg, f"{active_m}/{days_in_m}")
@@ -109,7 +109,7 @@ def _render_summary(stats: list[DailyStats], agents: list[str] | None,
 
     # --- Section 3：This Week（Tokens / Cost / Avg/Cost 带环比 + 活跃天数 X/7） ---
     if weekly:
-        weeks_list = _merge_weeks(weekly)
+        weeks_list = merge_weeks(weekly)
         cur_w = weeks_list[-1]
         prev_w = weeks_list[-2] if len(weeks_list) >= 2 else None
         this_monday = datetime.fromisoformat(cur_w.week).date()

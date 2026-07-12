@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .types import AgentInfo, RateLimits, UsageEntry, normalize_pct
-from .util import codex_home, iter_jsonl_dicts, project_from_cwd
+from .util import codex_home, file_may_have_events_since, iter_jsonl_dicts, project_from_cwd
 
 CODEX_DIR = codex_home()
 SESSIONS_DIR = os.path.join(CODEX_DIR, "sessions")
@@ -45,6 +45,8 @@ def load_entries(hours_back: int = 0) -> list[UsageEntry]:
         return entries
 
     for jsonl_path in sessions_path.rglob("*.jsonl"):
+        if not file_may_have_events_since(jsonl_path, cutoff):
+            continue
         _parse_jsonl(jsonl_path, models, entries, seen, cutoff)
 
     entries.sort(key=lambda e: e.timestamp)

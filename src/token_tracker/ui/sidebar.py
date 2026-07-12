@@ -154,7 +154,7 @@ class _WrappedLine:
 
 
 def _clock_lines() -> list[Text]:
-    """双时区时钟行：标签（等宽对齐）+ 月-日 周几 时:分:秒。时区数据缺失时静默跳过。"""
+    """三时区时钟行：标签（等宽对齐）+ 月-日 周几 时:分:秒。时区数据缺失时静默跳过。"""
     weekdays = t("weekday_grid").split(",")
     rows: list[tuple[str, datetime]] = []
     for label_key, tz_name in _CLOCK_ZONES:
