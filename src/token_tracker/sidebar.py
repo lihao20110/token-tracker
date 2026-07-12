@@ -11,6 +11,7 @@ hooks 事件流（PermissionRequest 等授权的精确信号）留 v2 接入；�
 """
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -267,7 +268,7 @@ def _parse_claude(path: Path, fallback_project: str, max_prompts: int) -> _Parse
     if not prompts:
         return None
     return _Parsed(session_id, project, prompts[-max_prompts:], pending_tool, model,
-                   next_hint=_last_line(last_reply))
+                   next_hint=_hint_text(last_reply))
 
 
 def _is_tool_result(content: object) -> bool:
@@ -372,16 +373,30 @@ def _parse_codex(path: Path, max_prompts: int) -> _Parsed | None:
     if not prompts:
         return None
     return _Parsed(session_id or path.stem, project, prompts[-max_prompts:], pending_task,
-                   next_hint=_last_line(last_reply))
+                   next_hint=_hint_text(last_reply))
 
 
-def _last_line(text: str, limit: int = 200) -> str:
-    """取回复的最后一个非空行（通常是「下一步」建议/追问），限长防超长行。"""
-    for line in reversed(text.splitlines()):
-        line = line.strip()
-        if line:
-            return line[:limit]
-    return ""
+_HINT_MAX_LINES = 5  # 「下一步」最多保留回复末尾 N 个有效行（渲染层逐行显示、超宽单行截断）
+
+
+def _hint_text(reply: str, max_lines: int = _HINT_MAX_LINES, line_limit: int = 160) -> str:
+    """回复尾部的「下一步」内容：保留原始行结构逐行取，压缩整理——
+    剔除代码块内容与围栏、分隔线、表格行、空行，去掉标题井号与粗体星号，
+    每行限长后取末尾至多 max_lines 行（收尾几行通常正是建议/追问）。"""
+    kept: list[str] = []
+    in_code = False
+    for raw in reply.splitlines():
+        ln = raw.strip()
+        if ln.startswith(("```", "~~~")):
+            in_code = not in_code
+            continue
+        if in_code or not ln:
+            continue
+        if ln.startswith("|") or re.fullmatch(r"[-*_=~]{3,}", ln):
+            continue
+        ln = re.sub(r"^#{1,6}\s+", "", ln).replace("**", "")
+        kept.append(ln[:line_limit])
+    return "\n".join(kept[-max_lines:])
 
 
 def _parse_ts(raw: object) -> datetime | None:

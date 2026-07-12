@@ -320,7 +320,7 @@ def test_render_prompt_short_stays_single_line():
 
 
 def test_next_hint_from_last_assistant_reply(tmp_path):
-    # 「下一步」= 末条 assistant 回复的最后一个非空行；后续新回复覆盖旧的
+    # 「下一步」= 末条 assistant 回复尾部的有效行（逐行保留结构）；后续新回复覆盖旧的
     rows = [
         _u("改一下"),
         _a("改好了。\n\n要我继续做 B 么"),
@@ -328,7 +328,26 @@ def test_next_hint_from_last_assistant_reply(tmp_path):
         _a([{"type": "text", "text": "B 也完成。\n验证后我们再发版"}]),
     ]
     parsed = _parse_claude(_write_jsonl(tmp_path / "s.jsonl", rows), "p", 5)
-    assert parsed.next_hint == "验证后我们再发版"
+    assert parsed.next_hint == "B 也完成。\n验证后我们再发版"
+
+
+def test_hint_text_compresses_noise_and_caps_lines():
+    from token_tracker.sidebar import _hint_text
+    reply = "\n".join([
+        "## 结论",                       # 标题井号剥掉
+        "第一行说明",
+        "```python",                     # 代码块整段剔除
+        "print('hi')",
+        "```",
+        "---",                           # 分隔线剔除
+        "| a | b |",                     # 表格行剔除
+        "**加粗的建议**",                 # 粗体星号剥掉
+        "行 A", "行 B", "行 C", "行 D",
+    ])
+    got = _hint_text(reply)
+    # 6 个有效行取末尾 5 行（「第一行说明」被挤出）
+    assert got.splitlines() == ["加粗的建议", "行 A", "行 B", "行 C", "行 D"]
+    assert "print" not in got and "---" not in got and "##" not in got and "**" not in got
 
 
 def test_codex_next_hint_from_agent_message(tmp_path):
@@ -341,7 +360,7 @@ def test_codex_next_hint_from_agent_message(tmp_path):
          "payload": {"type": "agent_message", "message": "完成了。\n需要我补测试吗"}},
     ]
     parsed = _parse_codex(_write_jsonl(tmp_path / "r.jsonl", rows), 5)
-    assert parsed.next_hint == "需要我补测试吗"
+    assert parsed.next_hint == "完成了。\n需要我补测试吗"
 
 
 def test_render_next_hint_and_spinner_frame():
@@ -357,22 +376,25 @@ def test_render_next_hint_and_spinner_frame():
     assert "✢ proj" in out and "✳ proj" in out  # 帧不同 → 会话头星形符号轮转（标题自带 ✳，不数全局）
 
 
-def test_render_hint_wraps_three_lines_hanging_indent():
-    # 「下一步」最多 3 行、末行省略号、右侧留 2 格；续行等宽空格悬挂、正文列对齐
+def test_render_hint_line_by_line_hanging_indent():
+    # 「下一步」逐行显示：一行原文=一行展示，超宽行单行截断省略号；
+    # 后续行等宽空格悬挂对齐正文列，右侧留 2 格
     now = datetime.now(UTC)
     sessions = [LiveSession(agent_id="claude-code", session_id="s1", project="proj",
                             last_activity=now, state=WAITING,
                             prompts=[Prompt("短", now)],
-                            next_hint="很长的下一步建议内容" * 12)]
+                            next_hint="第一行建议\n这是特别长的第二行建议内容会超出窗格宽度需要截断处理\n1. 选项甲")]
     console = Console(record=True, width=40, force_terminal=True)
     console.print(render_sidebar(sessions))
     out = console.export_text().splitlines()
     arrow_idx = next(i for i, ln in enumerate(out) if "↳" in ln)
     hint_lines = out[arrow_idx:]
-    assert len(hint_lines) == 3
-    assert hint_lines[-1].rstrip().endswith("…")
+    assert len(hint_lines) == 3  # 三行原文 = 三行展示
+    assert "第一行建议" in hint_lines[0]
+    assert hint_lines[1].rstrip().endswith("…")  # 超宽行单行截断
+    assert "选项甲" in hint_lines[2]
     first_text_col = hint_lines[0].index(":") + 2  # 正文起始列
-    assert all(ln[:first_text_col].strip() == "" for ln in hint_lines[1:])  # 续行悬挂对齐
+    assert all(ln[:first_text_col].strip() == "" for ln in hint_lines[1:])  # 悬挂对齐
     assert all(len(ln.rstrip()) <= 40 - 2 for ln in hint_lines)  # 右侧留白 2 格
 
 

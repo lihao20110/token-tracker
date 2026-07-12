@@ -21,7 +21,6 @@ _STATE_DOTS = {RUNNING: "●", ATTENTION: "●", WAITING: "●", IDLE: "○"}
 _SPINNER = "✢✳✻✽"
 
 _PROMPT_MAX_LINES = 2  # 每条提示词最多折 N 行，超出末行省略号
-_HINT_MAX_LINES = 3    # 「下一步」提示最多折 N 行
 _RIGHT_PAD = 2         # 正文右侧留白，折行不顶到窗格右缘
 
 
@@ -122,14 +121,18 @@ def render_sidebar(sessions: list[LiveSession], spinner_frame: int = 0) -> Group
                 max_lines=_PROMPT_MAX_LINES,
             ))
         if s.next_hint:
+            # 逐行显示（行结构由数据层 _hint_text 压缩整理、上限 5 行）：
+            # 一行原文 = 一行展示，超宽单行截断省略号；续行等宽空格悬挂、正文列对齐
             label = Text()
             label.append("  ↳ ", style=_S.dim)
             label.append(f"{t('sidebar_next')}: ", style=_S.peach)
-            lines.append(_WrappedLine(
-                text=_one_line(s.next_hint),
-                first=label,
-                cont=None,  # 续行等宽空格悬挂，正文列对齐
-                style=f"dim {_S.peach}",  # 与「下一步」标签同色系但 dim
-                max_lines=_HINT_MAX_LINES,
-            ))
+            hang = Text(" " * label.cell_len)
+            for i, hint_line in enumerate(s.next_hint.splitlines()):
+                lines.append(_WrappedLine(
+                    text=hint_line,
+                    first=label if i == 0 else hang,
+                    cont=None,
+                    style=f"dim {_S.peach}",  # 与「下一步」标签同色系但 dim
+                    max_lines=1,
+                ))
     return Group(*lines)
