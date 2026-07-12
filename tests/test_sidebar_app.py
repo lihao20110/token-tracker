@@ -39,10 +39,12 @@ async def test_sidebar_app_boots_renders_and_quits():
         assert scroll.styles.scrollbar_size_vertical == 0
         assert str(app.screen.styles.overflow_y) == "hidden"
         assert not app.screen.show_vertical_scrollbar
-        # 链接样式：默认空样式（可点行与普通文本无异、渲染短路），hover 才加下划线
+        # 链接样式：默认空样式（静止态由渲染层给项目名上蓝下划线），
+        # hover 整行统一蓝色下划线（回归：曾各段保持原色、下划线五颜六色）
         body = app.query_one("#sidebar-body", Static)
         assert not body.link_style
         assert body.link_style_hover.underline
+        assert body.link_style_hover.color is not None
         await pilot.press("q")
     # run_test 正常退出即通过：q 绑定 quit、app 无异常
 
