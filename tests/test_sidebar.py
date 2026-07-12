@@ -433,6 +433,34 @@ def test_hint_text_falls_back_to_last_line():
     assert _hint_text("统计口径核对完毕。\n数字与后台一致。") == "数字与后台一致。"
 
 
+def test_hint_text_only_scans_last_paragraph():
+    from token_tracker.sidebar import _hint_text
+    # 只看最后一段（主人定）：中段的大纲列表、前段的问句都不再进「下一步」
+    reply = "\n".join([
+        "大纲如下：",
+        "1. 开头要不要放钩子？",
+        "2. 中间论证",
+        "",
+        "先看第 1 节，看完告诉我。",
+    ])
+    assert _hint_text(reply) == "先看第 1 节，看完告诉我。"
+
+
+def test_hint_text_trailing_code_block_falls_back():
+    from token_tracker.sidebar import _hint_text
+    # 结尾是内含空行的代码块（段落切分的坑）：代码不漏进提示、回退到代码块前的段落
+    reply = "\n".join([
+        "跑一下这个验证：",
+        "",
+        "```python",
+        "a = 1",
+        "",
+        "b = 2",
+        "```",
+    ])
+    assert _hint_text(reply) == "跑一下这个验证："
+
+
 def test_ask_user_question_takes_priority(tmp_path):
     # 待回答的 AskUserQuestion（结构化字段，零猜测）优先于文本打分
     ask = [{"type": "tool_use", "id": "t1", "name": "AskUserQuestion",

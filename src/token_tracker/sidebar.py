@@ -466,10 +466,30 @@ def _score(sent: str) -> int:
     return s
 
 
+def _strip_code_blocks(reply: str) -> str:
+    """剔除围栏代码块（含围栏行）、保留空行结构供分段——代码块内的空行会骗过
+    段落切分（把半截代码当「最后一段」），必须先剔再分段。"""
+    out: list[str] = []
+    in_code = False
+    for ln in reply.splitlines():
+        if ln.strip().startswith(("```", "~~~")):
+            in_code = not in_code
+            continue
+        if not in_code:
+            out.append(ln)
+    return "\n".join(out)
+
+
 def _hint_text(reply: str) -> str:
-    """句子打分精简：切句后取正分句（问句/建议/选项行）按原顺序保留末尾至多
+    """句子打分精简，只看回复的**最后一个有效段落**（空行分段，主人定）：收尾段才是
+    「下一步」所在，整量分析会把中段大纲/列表也抓进来。结尾段清洗后为空（纯表格等）
+    向上回退。段内切句取正分句（问句/建议/选项行）按原顺序保留末尾至多
     _HINT_PICK_LINES 个；全无信号（纯汇报）回退最后一个有效行。"""
-    cleaned = _clean_reply_lines(reply)
+    cleaned: list[str] = []
+    for para in reversed(re.split(r"\n\s*\n", _strip_code_blocks(reply))):
+        cleaned = _clean_reply_lines(para)
+        if cleaned:
+            break
     if not cleaned:
         return ""
     picked: list[str] = []
