@@ -58,7 +58,7 @@ def test_claude_prompt_extraction_filters_noise(tmp_path):
         {"type": "summary", "summary": "历史摘要行"},
         _u("<command-name>/clear</command-name>"),
         _u("<local-command-caveat>Caveat: ...</local-command-caveat>", isMeta=True),
-        _u("真提示词一", sessionId="s-abc"),
+        _u("真提示词一", sessionId="s-abc", gitBranch="feature/x"),
         _u([{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]),
         _u([{"type": "image", "source": {}}, {"type": "text", "text": "带图提示词"}]),
         _u("子代理里的任务描述", isSidechain=True),
@@ -74,6 +74,7 @@ def test_claude_prompt_extraction_filters_noise(tmp_path):
     assert [p.text for p in parsed.prompts] == ["真提示词一", "带图提示词", "混合消息里的真提示词"]
     assert parsed.session_id == "s-abc"
     assert parsed.prompts[0].timestamp is not None
+    assert parsed.branch == "feature/x"  # transcript 自带 gitBranch，白拿
 
 
 def test_claude_max_prompts_keeps_latest(tmp_path):
@@ -123,7 +124,8 @@ def test_infer_state_matrix():
 def test_codex_parse(tmp_path):
     rows = [
         {"timestamp": "2026-07-12T02:00:00.000Z", "type": "session_meta",
-         "payload": {"id": "cx-1", "timestamp": "2026-07-12T02:00:00.000Z", "cwd": "/tmp/nope/beta"}},
+         "payload": {"id": "cx-1", "timestamp": "2026-07-12T02:00:00.000Z", "cwd": "/tmp/nope/beta",
+                     "git": {"commit_hash": "abc", "branch": "main"}}},
         {"timestamp": "2026-07-12T02:00:01.000Z", "type": "event_msg",
          "payload": {"type": "user_message", "message": "<user_instructions>注入的模板</user_instructions>"}},
         {"timestamp": "2026-07-12T02:00:02.000Z", "type": "event_msg",
@@ -136,6 +138,7 @@ def test_codex_parse(tmp_path):
     assert parsed.session_id == "cx-1"
     assert parsed.project == "beta"  # cwd 不存在 .git → 落最后一段
     assert [p.text for p in parsed.prompts] == ["介绍下这个项目"]
+    assert parsed.branch == "main"  # session_meta.git.branch
     assert parsed.pending_tool is True  # task_started 无 complete
 
     rows.append({"timestamp": "2026-07-12T02:01:00.000Z", "type": "event_msg",
@@ -514,6 +517,20 @@ def test_render_header_count_and_dual_clocks():
         local = datetime.now(ZoneInfo(tz_name))
         assert local.strftime("%m-%d") in clock_lines[i]
         assert local.strftime("%H:%M") in clock_lines[i]  # 秒可能跨帧，比对到分钟
+
+
+def test_render_branch_and_session_separator():
+    # 项目名后接 (分支)（statusline L1 同款）；会话块之间一条分割线、首块前是空行
+    now = datetime.now(UTC)
+    mk = lambda i: LiveSession(agent_id="claude-code", session_id=f"s{i}", project=f"p{i}",  # noqa: E731
+                               last_activity=now, state=WAITING, branch="main",
+                               prompts=[Prompt("x", now)])
+    console = Console(record=True, width=50, force_terminal=True)
+    console.print(render_sidebar([mk(1), mk(2), mk(3)]))
+    out = console.export_text().splitlines()
+    assert sum(1 for ln in out if "p1(main)" in ln or "p2(main)" in ln or "p3(main)" in ln) == 3
+    rules = [ln for ln in out if set(ln.strip()) == {"─"}]
+    assert len(rules) == 2  # 3 个会话块之间 2 条分割线
 
 
 def test_render_sidebar_empty():

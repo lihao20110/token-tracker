@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from rich.cells import cell_len, chop_cells
 from rich.console import Console, ConsoleOptions, Group, RenderResult
+from rich.rule import Rule
 from rich.style import Style
 from rich.text import Text
 
@@ -174,7 +175,7 @@ def _clock_lines() -> list[Text]:
 
 
 def render_sidebar(sessions: list[LiveSession], spinner_frame: int = 0) -> Group:
-    lines: list[Text | _WrappedLine] = []
+    lines: list[Text | Rule | _WrappedLine] = []
     header = Text(no_wrap=True, overflow="ellipsis")
     header.append("✳ tt sidebar", style=_S.accent)
     header.append(f" · {t('sidebar_active_count', n=len(sessions))}", style=_S.peach)
@@ -187,8 +188,9 @@ def render_sidebar(sessions: list[LiveSession], spinner_frame: int = 0) -> Group
         return Group(*lines)
 
     now = datetime.now(UTC)
-    for s in sessions:
-        lines.append(Text(""))
+    for i, s in enumerate(sessions):
+        # 会话块分隔：首块与头部时钟间空一行，块与块之间一条 dim 分割线
+        lines.append(Text("") if i == 0 else Rule(style=_S.dim, characters="─"))
         head = Text(no_wrap=True, overflow="ellipsis")
         dot = (_SPINNER[spinner_frame % len(_SPINNER)] if s.state == RUNNING
                else _STATE_DOTS.get(s.state, "●"))
@@ -196,6 +198,8 @@ def render_sidebar(sessions: list[LiveSession], spinner_frame: int = 0) -> Group
         # 链接语义与外观统一（主人定）：有终端定位=可跳转，项目名固定蓝色下划线标记；
         # 无定位（codex / 映射未建）=普通样式且不可点，所见即所得
         head.append(s.project, style=f"bold underline {_S.blue}" if s.terminal else "bold")
+        if s.branch:
+            head.append(f"({s.branch})", style=_S.red)  # statusline L1 同款：项目名(分支)、branch 走 red 槽
         head.append(f" · {AGENT_SHORT.get(s.agent_id, s.agent_id)}", style=_S.blue)
         if s.model:
             head.append(f" · {_model_short(s.model)}", style=_S.dim)

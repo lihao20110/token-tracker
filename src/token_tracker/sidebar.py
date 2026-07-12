@@ -60,6 +60,7 @@ class LiveSession:
     state: str
     prompts: list[Prompt] = field(default_factory=list)  # 时间正序，最后一条最新
     model: str = ""
+    branch: str = ""  # git 分支（CC=transcript 自带 gitBranch；codex=session_meta.git.branch）
     terminal: dict = field(default_factory=dict)  # 终端定位 {"iterm": ..., "tmux": ...}（statusline 采集），空=不可跳转
     next_hint: str = ""  # 「下一步」提示：末条 assistant 回复的最后一行（通常是建议/追问），无则空
 
@@ -72,6 +73,7 @@ class _Parsed:
     prompts: list[Prompt]
     pending_tool: bool  # 末个工具调用尚无结果（CC）/ task 未 complete（Codex）
     model: str = ""
+    branch: str = ""
     next_hint: str = ""
     # 最后一条有效事件（真实提示词/工具结果/AI 回复）的时间戳——「最近活动」的权威来源。
     # 不能用文件 mtime：CC 常驻进程会对闲置会话的 transcript 做不改内容的周期性触碰
@@ -218,6 +220,7 @@ def _scan_claude_sessions(cutoff: datetime, now: datetime,
                                    _heartbeat_fresh(heartbeat, parsed.session_id, now)),
                 prompts=parsed.prompts,
                 model=parsed.model,
+                branch=parsed.branch,
                 terminal=term_map.get(parsed.session_id) or {},
                 next_hint=parsed.next_hint,
             ))
@@ -233,9 +236,11 @@ def _parse_claude(path: Path, fallback_project: str, max_prompts: int) -> _Parse
     last_reply = ""
     pending_question = ""  # 待回答的 AskUserQuestion（任何后续用户动作即视为不再待决）
     last_event: datetime | None = None
+    branch = ""
     for data in iter_jsonl_dicts(path):
         if data.get("isSidechain"):  # 子代理 sidechain 的消息不是主人敲的提示词
             continue
+        branch = data.get("gitBranch") or branch
         dtype = data.get("type")
         if dtype == "user":
             sid = data.get("sessionId")
@@ -289,7 +294,7 @@ def _parse_claude(path: Path, fallback_project: str, max_prompts: int) -> _Parse
         return None
     # 「下一步」优先级链：结构化提问（待回答，零猜测）> 句子打分精简 > 末行兜底
     return _Parsed(session_id, project, prompts[-max_prompts:], pending_tool, model,
-                   next_hint=pending_question or _hint_text(last_reply),
+                   branch=branch, next_hint=pending_question or _hint_text(last_reply),
                    last_event=last_event)
 
 
@@ -359,6 +364,7 @@ def _scan_codex_sessions(cutoff: datetime, now: datetime,
                                _heartbeat_fresh(heartbeat, parsed.session_id, now)),
             prompts=parsed.prompts,
             model=parsed.model or models.get(parsed.session_id, ""),
+            branch=parsed.branch,
             terminal=term_map.get(parsed.session_id) or {},
             next_hint=parsed.next_hint,
         ))
@@ -372,6 +378,7 @@ def _parse_codex(path: Path, max_prompts: int) -> _Parsed | None:
     pending_task = False
     last_reply = ""
     last_event: datetime | None = None
+    branch = ""
     for data in iter_jsonl_dicts(path):
         payload = data.get("payload")
         if not isinstance(payload, dict):
@@ -385,6 +392,9 @@ def _parse_codex(path: Path, max_prompts: int) -> _Parsed | None:
             cwd = payload.get("cwd", "")
             if cwd:
                 project = project_from_cwd(cwd)
+            git = payload.get("git")
+            if isinstance(git, dict) and git.get("branch"):
+                branch = git["branch"]
         elif dtype == "event_msg":
             ptype = payload.get("type")
             if ptype == "user_message":
@@ -402,7 +412,7 @@ def _parse_codex(path: Path, max_prompts: int) -> _Parsed | None:
     if not prompts:
         return None
     return _Parsed(session_id or path.stem, project, prompts[-max_prompts:], pending_task,
-                   next_hint=_hint_text(last_reply), last_event=last_event)
+                   branch=branch, next_hint=_hint_text(last_reply), last_event=last_event)
 
 
 _HINT_MAX_LINES = 5   # 「下一步」显示上限（AskUserQuestion 格式化路径用；打分路径上限 3）
