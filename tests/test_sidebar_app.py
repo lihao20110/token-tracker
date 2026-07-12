@@ -15,8 +15,12 @@ async def test_sidebar_app_boots_renders_and_quits():
     async with app.run_test(size=(60, 24)) as pilot:
         await pilot.pause()
         assert app.query_one("#sidebar-body", Static) is not None
-        assert app.query_one(VerticalScroll).has_focus  # 容器持焦点，方向键可滚
+        scroll = app.query_one(VerticalScroll)
+        assert scroll.has_focus  # 容器持焦点，方向键可滚
         assert app.theme in ("ansi-dark", "ansi-light")  # chrome 继承终端 ANSI 调色板
+        # 滚动条已降噪：拇指非默认亮色、轨道透明（回归：曾被 ansi 主题映射成亮蓝大色块）
+        assert scroll.styles.scrollbar_color.hex != "#000000"
+        assert scroll.styles.scrollbar_background.a == 0
         await pilot.press("q")
     # run_test 正常退出即通过：q 绑定 quit、app 无异常
 
