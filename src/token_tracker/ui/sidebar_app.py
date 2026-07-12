@@ -66,10 +66,10 @@ def _jump_argvs(info: dict) -> list[list[str]] | None:
 class _SidebarBody(Static):
     """会话面板：链接（可跳转的会话头行）统一蓝色下划线语义。
 
-    链接视觉 = 项目名的「蓝字 + 蓝下划线」（渲染层写死在 span 样式里），永远统一一种蓝。
-    终端下划线颜色物理绑定该格字色（SGR 无独立下划线色通道给 Rich 用），整行 hover
-    下划线必然五彩随字色——主人两次反馈不统一，故 hover 效果整体关闭（返回空样式，
-    `if link_style_hover:` 短路不生效）；点击区域仍是整行。
+    链接视觉定版（与主人多轮收敛）：静止=项目名蓝字蓝下划线（渲染层写死）；
+    hover=整行蓝字+蓝下划线——Rich/Textual 均无独立下划线色通道（SGR 58 零支持，
+    已核实源码），下划线颜色物理绑定字色，「整行统一蓝下划线」唯一实现就是整行变蓝。
+    悬停高亮的连续性依赖渲染层 _click_style 的 link_id 跨帧稳定（曾因漂移断续）。
     """
 
     @property
@@ -78,7 +78,7 @@ class _SidebarBody(Static):
 
     @property
     def link_style_hover(self) -> RichStyle:
-        return RichStyle()
+        return RichStyle(color=get_theme(config.resolve_theme())["base"]["blue"], underline=True)
 
 
 class SidebarApp(App[None]):
