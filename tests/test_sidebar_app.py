@@ -62,8 +62,8 @@ async def test_click_session_head_dispatches_jump(monkeypatch):
     monkeypatch.setattr(app, "action_jump_to", lambda sid: called.append(sid), raising=False)
     async with app.run_test(size=(60, 24)) as pilot:
         await pilot.pause()
-        # 内容行序：0=标题、1=空行、2=会话头行
-        await pilot.click("#sidebar-body", offset=(4, 2))
+        # 内容行序：0=标题、1/2=北京/洛杉矶时钟、3=空行、4=会话头行
+        await pilot.click("#sidebar-body", offset=(4, 4))
         await pilot.pause()
     assert called == ["s-click"]
 

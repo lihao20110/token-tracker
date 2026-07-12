@@ -460,6 +460,27 @@ def test_render_mixed_cjk_ascii_fills_width():
     assert cell_len(hint_line.rstrip()) >= 40 - 2 - 2
 
 
+def test_render_header_count_and_dual_clocks():
+    import re as _re
+    from zoneinfo import ZoneInfo
+    now = datetime.now(UTC)
+    sessions = [LiveSession(agent_id="claude-code", session_id=f"s{i}", project="p",
+                            last_activity=now, state=WAITING, prompts=[Prompt("x", now)])
+                for i in range(3)]
+    console = Console(record=True, width=60, force_terminal=True)
+    console.print(render_sidebar(sessions))
+    out = console.export_text().splitlines()
+    assert "3" in out[0]  # 活跃会话计数在标题行
+    clock_lines = [ln for ln in out if _re.search(r"\d{2}:\d{2}:\d{2}", ln)]
+    assert len(clock_lines) == 2  # 北京 + 洛杉矶两行时钟
+    bj = datetime.now(ZoneInfo("Asia/Shanghai"))
+    la = datetime.now(ZoneInfo("America/Los_Angeles"))
+    assert bj.strftime("%m-%d") in clock_lines[0]
+    assert la.strftime("%m-%d") in clock_lines[1]
+    assert bj.strftime("%H:%M") in clock_lines[0]  # 秒可能跨帧，比对到分钟
+    assert la.strftime("%H:%M") in clock_lines[1]
+
+
 def test_render_sidebar_empty():
     console = Console(record=True, width=60)
     console.print(render_sidebar([]))

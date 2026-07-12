@@ -20,6 +20,9 @@ _STRINGS = {
         "sidebar_jump_no_target": "该会话暂无终端定位（其状态栏渲染过一帧后才有）",
         "sidebar_jump_failed": "跳转失败: {err}",
         "sidebar_next": "下一步",
+        "sidebar_active_count": "最近活跃会话 {n} 条",
+        "sidebar_tz_bj": "北京",
+        "sidebar_tz_la": "洛杉矶",
         # --- status.py（会话表列名与 tips）---
         "recent_sessions": "最近会话",
         "sessions_tips": "Tips: tt sessions <N> 调数量 · --sort cost|tokens|time|messages · --asc/--desc 改排序",
@@ -105,6 +108,9 @@ _STRINGS = {
         "sidebar_jump_no_target": "No terminal mapping for this session yet (appears after its statusline renders a frame)",
         "sidebar_jump_failed": "Jump failed: {err}",
         "sidebar_next": "Next",
+        "sidebar_active_count": "{n} active sessions",
+        "sidebar_tz_bj": "Beijing",
+        "sidebar_tz_la": "LA",
         # --- status.py（会话表列名与 tips）---
         "recent_sessions": "Recent Sessions",
         "sessions_tips": "Tips: tt sessions <N> for count · --sort cost|tokens|time|messages · --asc/--desc to sort",

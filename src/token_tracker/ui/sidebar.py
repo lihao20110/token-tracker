@@ -6,6 +6,7 @@
 """
 
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from rich.cells import cell_len, chop_cells
 from rich.console import Console, ConsoleOptions, Group, RenderResult
@@ -13,9 +14,11 @@ from rich.text import Text
 
 from ..i18n import t
 from ..sidebar import ATTENTION, IDLE, RUNNING, WAITING, LiveSession
-from ..tz import system_tz
 from .format import AGENT_SHORT, _model_short
 from .theme import _S
+
+# 头部双时区时钟（主人常驻北京、CLI 伪装 TZ=洛杉矶，两个都显式标出、不受 TZ 环境变量影响）
+_CLOCK_ZONES = (("sidebar_tz_bj", "Asia/Shanghai"), ("sidebar_tz_la", "America/Los_Angeles"))
 
 _STATE_DOTS = {RUNNING: "●", ATTENTION: "●", WAITING: "●", IDLE: "○"}
 # 运行中的动画帧（CC 同款星形轮转）；spinner_frame 由 Textual 壳的动画 tick 递增
@@ -129,12 +132,35 @@ class _WrappedLine:
             yield out
 
 
+def _clock_lines() -> list[Text]:
+    """双时区时钟行：标签（等宽对齐）+ 月-日 周几 时:分:秒。时区数据缺失时静默跳过。"""
+    weekdays = t("weekday_grid").split(",")
+    rows: list[tuple[str, datetime]] = []
+    for label_key, tz_name in _CLOCK_ZONES:
+        try:
+            rows.append((t(label_key), datetime.now(ZoneInfo(tz_name))))
+        except Exception:  # noqa: BLE001 - 无 tzdata 的环境（如裸 Windows）跳过该行即可
+            continue
+    label_width = max((cell_len(lb) for lb, _ in rows), default=0)
+    out: list[Text] = []
+    for label, local in rows:
+        ln = Text(no_wrap=True, overflow="ellipsis")
+        ln.append(label, style=_S.blue)
+        ln.append(" " * (label_width - cell_len(label) + 1))
+        ln.append(local.strftime("%m-%d "), style=_S.dim)
+        ln.append(weekdays[(local.weekday() + 1) % 7] + " ", style=_S.dim)
+        ln.append(local.strftime("%H:%M:%S"))
+        out.append(ln)
+    return out
+
+
 def render_sidebar(sessions: list[LiveSession], spinner_frame: int = 0) -> Group:
     lines: list[Text | _WrappedLine] = []
     header = Text(no_wrap=True, overflow="ellipsis")
     header.append("✳ tt sidebar", style=_S.accent)
-    header.append(datetime.now(system_tz()).strftime("  %H:%M:%S"), style=_S.dim)
+    header.append(f" · {t('sidebar_active_count', n=len(sessions))}", style=_S.peach)
     lines.append(header)
+    lines.extend(_clock_lines())
 
     if not sessions:
         lines.append(Text(""))

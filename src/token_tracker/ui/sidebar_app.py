@@ -18,7 +18,7 @@ from textual.widgets import Footer, Static
 
 from .. import config
 from ..i18n import t
-from ..sidebar import RUNNING, LiveSession, scan_sessions, terminal_info
+from ..sidebar import LiveSession, scan_sessions, terminal_info
 from .sidebar import render_sidebar
 from .themes import get_theme
 
@@ -121,9 +121,8 @@ class SidebarApp(App[None]):
         self._update_body()
 
     def _tick_spinner(self) -> None:
-        """动画帧：仅在有运行中会话时重绘（纯内存渲染，5s 的磁盘扫描节奏不变）。"""
-        if not any(s.state == RUNNING for s in self._sessions):
-            return
+        """动画/时钟帧：0.5s 重绘一次（纯内存渲染，5s 的磁盘扫描节奏不变）——
+        运行中星形轮转 + 头部双时区时钟的秒针都靠它走。"""
         self._frame += 1
         self._update_body()
 
