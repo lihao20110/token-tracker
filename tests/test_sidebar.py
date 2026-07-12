@@ -357,6 +357,25 @@ def test_render_next_hint_and_spinner_frame():
     assert "✢ proj" in out and "✳ proj" in out  # 帧不同 → 会话头星形符号轮转（标题自带 ✳，不数全局）
 
 
+def test_render_hint_wraps_three_lines_hanging_indent():
+    # 「下一步」最多 3 行、末行省略号、右侧留 2 格；续行等宽空格悬挂、正文列对齐
+    now = datetime.now(UTC)
+    sessions = [LiveSession(agent_id="claude-code", session_id="s1", project="proj",
+                            last_activity=now, state=WAITING,
+                            prompts=[Prompt("短", now)],
+                            next_hint="很长的下一步建议内容" * 12)]
+    console = Console(record=True, width=40, force_terminal=True)
+    console.print(render_sidebar(sessions))
+    out = console.export_text().splitlines()
+    arrow_idx = next(i for i, ln in enumerate(out) if "↳" in ln)
+    hint_lines = out[arrow_idx:]
+    assert len(hint_lines) == 3
+    assert hint_lines[-1].rstrip().endswith("…")
+    first_text_col = hint_lines[0].index(":") + 2  # 正文起始列
+    assert all(ln[:first_text_col].strip() == "" for ln in hint_lines[1:])  # 续行悬挂对齐
+    assert all(len(ln.rstrip()) <= 40 - 2 for ln in hint_lines)  # 右侧留白 2 格
+
+
 def test_render_sidebar_empty():
     console = Console(record=True, width=60)
     console.print(render_sidebar([]))

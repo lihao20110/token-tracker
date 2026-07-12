@@ -21,7 +21,7 @@ _STATE_DOTS = {RUNNING: "●", ATTENTION: "●", WAITING: "●", IDLE: "○"}
 _SPINNER = "✢✳✻✽"
 
 _PROMPT_MAX_LINES = 2  # 每条提示词最多折 N 行，超出末行省略号
-_PREFIX_WIDTH = 2      # 树枝前缀「├ 」/「└ 」/「│ 」占 2 格，与头行的 ● 同列成树
+_HINT_MAX_LINES = 3    # 「下一步」提示最多折 N 行
 _RIGHT_PAD = 2         # 正文右侧留白，折行不顶到窗格右缘
 
 
@@ -46,39 +46,44 @@ def _one_line(text: str, limit: int = 300) -> str:
     return flat[:limit]
 
 
-class _PromptText:
-    """单条提示词：渲染期按实际宽度折行，最多 _PROMPT_MAX_LINES 行、超出末行加省略号。
+class _WrappedLine:
+    """树内一段内容：渲染期按实际宽度折行，最多 max_lines 行、超出末行加省略号。
 
-    树状语义：每条提示词首行一个分支符（├，末条 └）——数分支即数提示词；
-    折行的续行用 │ 延续轨道（末条的续行留空对齐），与「新的一条」肉眼可分。
+    first / cont 是首行与续行的**带样式前缀**（等宽）；cont=None 时用等宽空格悬挂对齐
+    （「下一步」行的续行对齐到正文起始列）。提示词的树状语义由前缀表达：
+    首行分支符（├，末条 └）——数分支即数提示词；续行 │ 延续轨道、末条续行留空。
     宽度在 __rich_console__ 里才拿得到，故做成 renderable 而非预构建 Text——
     Rich 快照（--once）与 Textual Static 两个渲染路径通用。
     """
 
-    def __init__(self, text: str, branch: str, cont: str, style: str) -> None:
+    def __init__(self, text: str, first: Text, cont: Text | None,
+                 style: str, max_lines: int) -> None:
         self.text = text
-        self.branch = branch  # 首行分支符："├ " 或末条 "└ "
-        self.cont = cont      # 续行前缀："│ "（下方还有分支）或 "  "（末条）
+        self.first = first
+        self.cont = cont
         self.style = style
+        self.max_lines = max_lines
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        avail = max(10, options.max_width - _PREFIX_WIDTH - _RIGHT_PAD)
+        prefix_width = self.first.cell_len
+        cont = self.cont if self.cont is not None else Text(" " * prefix_width)
+        avail = max(10, options.max_width - prefix_width - _RIGHT_PAD)
         wrapped = Text(self.text, style=self.style).wrap(console, avail)
-        kept = list(wrapped[:_PROMPT_MAX_LINES])
-        if len(wrapped) > _PROMPT_MAX_LINES and kept:
+        kept = list(wrapped[:self.max_lines])
+        if len(wrapped) > self.max_lines and kept:
             last = kept[-1]
             last.rstrip()
             last.truncate(avail - 1)
             last.append("…", self.style or None)
         for i, body in enumerate(kept):
             out = Text(no_wrap=True)
-            out.append(self.branch if i == 0 else self.cont, style=_S.dim)
+            out.append_text(self.first if i == 0 else cont)
             out.append_text(body)
             yield out
 
 
 def render_sidebar(sessions: list[LiveSession], spinner_frame: int = 0) -> Group:
-    lines: list[Text | _PromptText] = []
+    lines: list[Text | _WrappedLine] = []
     header = Text(no_wrap=True, overflow="ellipsis")
     header.append("✳ tt sidebar", style=_S.accent)
     header.append(datetime.now(system_tz()).strftime("  %H:%M:%S"), style=_S.dim)
@@ -109,16 +114,22 @@ def render_sidebar(sessions: list[LiveSession], spinner_frame: int = 0) -> Group
         lines.append(head)
         for i, p in enumerate(s.prompts):
             last = i == len(s.prompts) - 1
-            lines.append(_PromptText(
+            lines.append(_WrappedLine(
                 text=_one_line(p.text),
-                branch="└ " if last else "├ ",
-                cont="  " if last else "│ ",
+                first=Text("└ " if last else "├ ", style=_S.dim),
+                cont=Text("  " if last else "│ ", style=_S.dim),
                 style="" if last else _S.dim,
+                max_lines=_PROMPT_MAX_LINES,
             ))
         if s.next_hint:
-            hint = Text(no_wrap=True, overflow="ellipsis")
-            hint.append("  ↳ ", style=_S.dim)
-            hint.append(f"{t('sidebar_next')}: ", style=_S.peach)
-            hint.append(_one_line(s.next_hint), style=_S.dim)
-            lines.append(hint)
+            label = Text()
+            label.append("  ↳ ", style=_S.dim)
+            label.append(f"{t('sidebar_next')}: ", style=_S.peach)
+            lines.append(_WrappedLine(
+                text=_one_line(s.next_hint),
+                first=label,
+                cont=None,  # 续行等宽空格悬挂，正文列对齐
+                style=f"dim {_S.peach}",  # 与「下一步」标签同色系但 dim
+                max_lines=_HINT_MAX_LINES,
+            ))
     return Group(*lines)
