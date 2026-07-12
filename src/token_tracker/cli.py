@@ -219,26 +219,18 @@ def _summary_from_sessions(sessions) -> StatusSummary:
 
 
 def _cmd_sidebar(agents, args: list[str]) -> None:
-    """常驻侧边栏（窄窗格用）：活跃会话 + 各自最近提示词，5s 轮询刷新。
-    `--once` 或非 tty 打一帧快照即退（脚本 / `!tt sidebar` / 测试用）。
-    只读 transcript 与心跳文件，不写任何产物；不跟随会话收窄 agent——
-    侧边栏本职是「总览所有会话」，显式 --claude / --codex 才过滤。"""
+    """常驻侧边栏（窄窗格用）：活跃会话 + 各自最近提示词。live 模式跑 Textual app
+    （备用屏 + 滚动 + 5s 定时刷新，q / Ctrl+C 退出）；`--once` 或非 tty 打一帧
+    Rich 快照即退（脚本 / `!tt sidebar` / 测试用）。只读 transcript 与心跳文件，
+    不写任何产物；不跟随会话收窄 agent——侧边栏本职是「总览所有会话」，
+    显式 --claude / --codex 才过滤。"""
     agent_ids = {a.id for a in agents}
     if "--once" in args or not sys.stdout.isatty():
         with forced_color_console():
             get_console().print(render_sidebar(scan_sessions(agent_ids=agent_ids)))
         return
-    import time
-
-    from rich.live import Live
-    try:
-        with Live(render_sidebar(scan_sessions(agent_ids=agent_ids)),
-                  console=get_console(), screen=True, auto_refresh=False) as live:
-            while True:
-                time.sleep(5.0)
-                live.update(render_sidebar(scan_sessions(agent_ids=agent_ids)), refresh=True)
-    except KeyboardInterrupt:
-        pass
+    from .ui.sidebar_app import SidebarApp  # 延迟 import：textual 仅 live 模式加载
+    SidebarApp(agent_ids=agent_ids).run()
 
 
 def _current_session_agent() -> str | None:

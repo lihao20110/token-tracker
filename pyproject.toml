@@ -28,14 +28,18 @@ dependencies = [
     "rich>=13.7",
     # wizard 补丁挂在 questionary 私有内部（InquirerControl._get_choice_tokens 等），锁大版本防破坏
     "questionary>=2.0,<3",
+    # 仅 tt sidebar live 模式用（cli 延迟 import，日常 tt 启动不加载）；与 rich 同门，渲染对象直接复用
+    "textual>=1.0",
 ]
 
 [project.optional-dependencies]
 test = [
     "pytest>=8.0",
+    "pytest-asyncio>=0.24",
 ]
 dev = [
     "pytest>=8.0",
+    "pytest-asyncio>=0.24",
     "ruff>=0.6",
     "mypy>=1.8",
 ]
@@ -68,6 +72,8 @@ select = ["E4", "E7", "E9", "F", "W", "I", "UP", "B"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# sidebar 的 Textual app 用 pilot 异步测试；auto 模式让 async def 用例免装饰器直接跑
+asyncio_mode = "auto"
 
 [tool.mypy]
 python_version = "3.11"
