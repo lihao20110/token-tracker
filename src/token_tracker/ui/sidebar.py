@@ -45,6 +45,7 @@ def _click_style(session_id: str) -> Style:
     return style
 
 _PROMPT_MAX_LINES = 2  # 每条提示词最多折 N 行，超出末行省略号
+_HINT_MAX_WRAP = 3     # 「下一步」每行原文最多折 N 行，超出末行省略号（主人定：先正常折行，3 行放不下再省略）
 _RIGHT_PAD = 2         # 正文右侧留白，折行不顶到窗格右缘
 
 
@@ -221,8 +222,8 @@ def render_sidebar(sessions: list[LiveSession], spinner_frame: int = 0) -> Group
                 max_lines=_PROMPT_MAX_LINES,
             ))
         if s.next_hint:
-            # 逐行显示（行结构由数据层 _hint_text 压缩整理、上限 5 行）：
-            # 一行原文 = 一行展示，超宽单行截断省略号；续行等宽空格悬挂、正文列对齐
+            # 逐行显示（行结构由数据层 _hint_text 压缩整理、上限 5 行）：一行原文
+            # 正常折行、最多 _HINT_MAX_WRAP 行仍放不下才末行省略；折行/续行等宽空格悬挂、正文列对齐
             label = Text()
             label.append("  ↳ ", style=_S.dim)
             label.append(f"{t('sidebar_next')}: ", style=_S.peach)
@@ -233,6 +234,6 @@ def render_sidebar(sessions: list[LiveSession], spinner_frame: int = 0) -> Group
                     first=label if i == 0 else hang,
                     cont=None,
                     style=f"dim {_S.peach}",  # 与「下一步」标签同色系但 dim
-                    max_lines=1,
+                    max_lines=_HINT_MAX_WRAP,
                 ))
     return Group(*lines)

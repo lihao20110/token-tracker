@@ -504,23 +504,25 @@ def test_render_next_hint_and_spinner_frame():
     assert "✢ proj" in out and "✳ proj" in out  # 帧不同 → 会话头星形符号轮转（标题自带 ✳，不数全局）
 
 
-def test_render_hint_line_by_line_hanging_indent():
-    # 「下一步」逐行显示：一行原文=一行展示，超宽行单行截断省略号；
-    # 后续行等宽空格悬挂对齐正文列，右侧留 2 格
+def test_render_hint_wraps_to_three_lines_then_ellipsis():
+    # 「下一步」一行原文正常折行（主人定）：最多 3 行、仍放不下才在第三行末省略；
+    # 折行/续行等宽空格悬挂对齐正文列，右侧留 2 格
     now = datetime.now(UTC)
+    long_line = "这是特别长的建议内容" * 8  # 160 格，远超 3 行容量
     sessions = [LiveSession(agent_id="claude-code", session_id="s1", project="proj",
                             last_activity=now, state=WAITING,
                             prompts=[Prompt("短", now)],
-                            next_hint="第一行建议\n这是特别长的第二行建议内容会超出窗格宽度需要截断处理\n1. 选项甲")]
+                            next_hint=f"第一行建议\n{long_line}\n1. 选项甲")]
     console = Console(record=True, width=40, force_terminal=True)
     console.print(render_sidebar(sessions))
     out = console.export_text().splitlines()
     arrow_idx = next(i for i, ln in enumerate(out) if "↳" in ln)
     hint_lines = out[arrow_idx:]
-    assert len(hint_lines) == 3  # 三行原文 = 三行展示
+    assert len(hint_lines) == 5  # 1 + 超长行折满 3 行 + 1
     assert "第一行建议" in hint_lines[0]
-    assert hint_lines[1].rstrip().endswith("…")  # 超宽行单行截断
-    assert "选项甲" in hint_lines[2]
+    assert not hint_lines[1].rstrip().endswith("…")  # 前两折行正常显示
+    assert hint_lines[3].rstrip().endswith("…")      # 3 行仍放不下 → 末行省略
+    assert "选项甲" in hint_lines[4]
     first_text_col = hint_lines[0].index(":") + 2  # 正文起始列
     assert all(ln[:first_text_col].strip() == "" for ln in hint_lines[1:])  # 悬挂对齐
     assert all(len(ln.rstrip()) <= 40 - 2 for ln in hint_lines)  # 右侧留白 2 格
@@ -542,19 +544,18 @@ def test_fold_cjk_fills_and_ascii_word_atomic():
 
 
 def test_render_mixed_cjk_ascii_fills_width():
-    # 回归：Rich 词折行把空格后的整段中文当一个词挪下行，单行截断的省略号
-    # 出现在断词点、右侧大片留白；硬折后每行应填满可用宽度再截断
+    # 回归：Rich 词折行把空格后的整段中文当一个词挪下行，省略号/换行
+    # 出现在断词点、右侧大片留白；硬折后每行应填满可用宽度再折行
     now = datetime.now(UTC)
     sessions = [LiveSession(agent_id="claude-code", session_id="s1", project="proj",
                             last_activity=now, state=WAITING,
                             prompts=[Prompt("短", now)],
-                            next_hint="取最后一条 AI 回复的尾部继续更多内容这一行非常长必须截断")]
+                            next_hint="取最后一条 AI 回复的尾部继续更多内容这一行非常长必须折行")]
     console = Console(record=True, width=40, force_terminal=True)
     console.print(render_sidebar(sessions))
     from rich.cells import cell_len
     hint_line = next(ln for ln in console.export_text().splitlines() if "↳" in ln)
-    assert hint_line.rstrip().endswith("…")
-    # 按终端格宽（CJK 一字两格）应填满到右留白附近，不在断词点提前留白
+    # 按终端格宽（CJK 一字两格）首行应填满到右留白附近，不在断词点提前留白换行
     assert cell_len(hint_line.rstrip()) >= 40 - 2 - 2
 
 
