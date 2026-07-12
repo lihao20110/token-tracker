@@ -20,10 +20,12 @@ from .analyzer.aggregator import (
 from .analyzer.cost import calculate_cost
 from .hooks import is_setup, needs_update, setup, unsetup, update_hook
 from .i18n import t
+from .sidebar import scan_sessions
 from .tz import system_tz
 from .ui import theme, themes
 from .ui.console import forced_color_console, get_console
 from .ui.heatmap import render_daily_heatmap
+from .ui.sidebar import render_sidebar
 from .ui.status import render_sessions_view, render_status
 from .ui.tables import (
     render_monthly,
@@ -214,6 +216,29 @@ def _summary_from_sessions(sessions) -> StatusSummary:
         sm.models[s.model] = sm.models.get(s.model, 0) + s.total_tokens
     sm.session_count = len(sessions)
     return sm
+
+
+def _cmd_sidebar(agents, args: list[str]) -> None:
+    """常驻侧边栏（窄窗格用）：活跃会话 + 各自最近提示词，2s 轮询刷新。
+    `--once` 或非 tty 打一帧快照即退（脚本 / `!tt sidebar` / 测试用）。
+    只读 transcript 与心跳文件，不写任何产物；不跟随会话收窄 agent——
+    侧边栏本职是「总览所有会话」，显式 --claude / --codex 才过滤。"""
+    agent_ids = {a.id for a in agents}
+    if "--once" in args or not sys.stdout.isatty():
+        with forced_color_console():
+            get_console().print(render_sidebar(scan_sessions(agent_ids=agent_ids)))
+        return
+    import time
+
+    from rich.live import Live
+    try:
+        with Live(render_sidebar(scan_sessions(agent_ids=agent_ids)),
+                  console=get_console(), screen=True, auto_refresh=False) as live:
+            while True:
+                time.sleep(2.0)
+                live.update(render_sidebar(scan_sessions(agent_ids=agent_ids)), refresh=True)
+    except KeyboardInterrupt:
+        pass
 
 
 def _current_session_agent() -> str | None:
@@ -461,6 +486,10 @@ def main():
             get_console().print(f"[yellow]{t('no_token_data')}[/yellow]")
             return
         render_status(**data)
+        return
+
+    if command == "sidebar":
+        _cmd_sidebar(agents, args[1:])
         return
 
     rest_args, sort_key, sort_desc = _parse_sort_args(args[1:])

@@ -10,7 +10,13 @@ _STRINGS = {
         "unknown_cmd": "未知命令: {cmd}",
         "agent_filter_conflict": "--claude 与 --codex 互斥，只能指定其中一个",
         "agent_not_detected": "未检测到 {flag} 的使用数据，请先在该 agent 中使用后再查询",
-        "available_cmds": "可用命令: status, daily, weekly, monthly, sessions, theme, setup, unsetup, --version",
+        "available_cmds": "可用命令: status, daily, weekly, monthly, sessions, sidebar, theme, setup, unsetup, --version",
+        # --- sidebar（cli.py / ui/sidebar.py）---
+        "sidebar_empty": "窗口期内没有活跃会话",
+        "sidebar_state_running": "运行中",
+        "sidebar_state_attention": "待确认",
+        "sidebar_state_waiting": "等输入",
+        "sidebar_state_idle": "空闲",
         # --- status.py（会话表列名与 tips）---
         "recent_sessions": "最近会话",
         "sessions_tips": "Tips: tt sessions <N> 调数量 · --sort cost|tokens|time|messages · --asc/--desc 改排序",
@@ -86,7 +92,13 @@ _STRINGS = {
         "unknown_cmd": "Unknown command: {cmd}",
         "agent_filter_conflict": "--claude and --codex are mutually exclusive; please pick one",
         "agent_not_detected": "No usage data for {flag}; use it in that agent first, then query again",
-        "available_cmds": "Available commands: status, daily, weekly, monthly, sessions, theme, setup, unsetup, --version",
+        "available_cmds": "Available commands: status, daily, weekly, monthly, sessions, sidebar, theme, setup, unsetup, --version",
+        # --- sidebar（cli.py / ui/sidebar.py）---
+        "sidebar_empty": "No active sessions in the window",
+        "sidebar_state_running": "running",
+        "sidebar_state_attention": "needs you",
+        "sidebar_state_waiting": "awaiting input",
+        "sidebar_state_idle": "idle",
         # --- status.py（会话表列名与 tips）---
         "recent_sessions": "Recent Sessions",
         "sessions_tips": "Tips: tt sessions <N> for count · --sort cost|tokens|time|messages · --asc/--desc to sort",
