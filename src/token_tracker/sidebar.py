@@ -7,11 +7,17 @@
   `task_started` / `task_complete` 供状态判定。
 - 心跳 `config.STATUS_FILE`（CC statusline 每帧落盘）——`session_id` + `_received_at`
   判「正在跑」，白拿、零新增开销。
+- CC 会话注册表 `<claude_home>/sessions/<pid>.json`（实测 CC 2.1.205+ 维护，正常退出
+  即删文件）——含 sessionId / pid / procStart，据此把「transcript 还在窗口期但进程
+  已死」的会话判为已关闭、不进列表；目录不存在（老版本 CC）不过滤并提示升级。
 hooks 事件流（PermissionRequest 等授权的精确信号）留 v2 接入；当前状态为启发式推断。
 """
 
 import json
+import os
 import re
+import subprocess
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -19,7 +25,7 @@ from pathlib import Path
 from . import config
 from .adapters import claude as claude_adapter
 from .adapters import codex as codex_adapter
-from .adapters.util import iter_jsonl_dicts, project_from_cwd
+from .adapters.util import claude_home, iter_jsonl_dicts, project_from_cwd
 
 # 会话状态（启发式，见 _infer_state；ATTENTION 无法区分「等授权」和「长工具在跑」，v2 接 hooks 后才能）
 RUNNING = "running"      # 正在生成 / 写盘
@@ -125,7 +131,8 @@ def scan_sessions(hours_back: int = DEFAULT_HOURS_BACK,
     heartbeat, term_map = _read_status()
     sessions: list[LiveSession] = []
     if agent_ids is None or "claude-code" in agent_ids:
-        sessions.extend(_scan_claude_sessions(cutoff, now, heartbeat, max_prompts, term_map=term_map))
+        sessions.extend(_scan_claude_sessions(cutoff, now, heartbeat, max_prompts, term_map=term_map,
+                                              live_sids=_live_claude_sids()))
     if agent_ids is None or "codex" in agent_ids:
         sessions.extend(_scan_codex_sessions(cutoff, now, heartbeat, max_prompts, term_map=term_map))
     sessions.sort(key=lambda s: s.last_activity, reverse=True)
@@ -178,6 +185,99 @@ def terminal_info(session_id: str) -> dict:
     return info if isinstance(info, dict) else {}
 
 
+def _live_claude_sids() -> set[str] | None:
+    """CC 会话注册表 → 进程仍存活的会话 sessionId 集合；注册表目录不存在（老版本 CC
+    没有该特性）返回 None 表示「无法判断，别过滤」。
+
+    正常退出 CC 会删掉自己的注册文件；crash 残留的文件靠 pid 探活 + 启动时间比对
+    兜底（pid 可能已被无关进程复用）。启动时间用 `startedAt`（epoch 毫秒，时区无关），
+    **不能用 `procStart` 字符串**——它按 CC 写入时的时区渲染，而 `ps lstart` 按本进程
+    TZ 渲染（主人 CLI 设 TZ），字符串比对会把全部会话误判死。防御式解析：单个文件
+    坏了只跳过该文件。
+    """
+    reg = Path(claude_home()) / "sessions"
+    if not reg.is_dir():
+        return None
+    want: dict[int, float | None] = {}
+    sid_by_pid: dict[int, str] = {}
+    for path in reg.glob("*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        sid = data.get("sessionId")
+        pid = data.get("pid")
+        if not isinstance(pid, int):  # 缺 pid 字段时退回文件名（注册文件以 pid 命名）
+            pid = int(path.stem) if path.stem.isdigit() else 0
+        if not isinstance(sid, str) or not sid or pid <= 0:
+            continue
+        started_ms = data.get("startedAt")
+        want[pid] = started_ms / 1000 if isinstance(started_ms, (int, float)) else None
+        sid_by_pid[pid] = sid
+    return {sid_by_pid[pid] for pid in _alive_pids(want)}
+
+
+_START_TOLERANCE_S = 10  # 注册的 startedAt 与进程真实启动时刻的允许偏差（记录晚于启动零点几秒）
+
+
+def _alive_pids(want: dict[int, float | None]) -> set[int]:
+    """want: pid → 注册表记录的进程启动时间（epoch 秒，可 None）。返回确认存活的 pid。
+
+    一次 `ps -o pid=,lstart=` 批量查询；lstart 按本进程 TZ 解析回 epoch（ps 子进程
+    继承同一 TZ，mktime 同源可逆），与 startedAt 差超 _START_TOLERANCE_S 视为 pid
+    已被复用（判死）。lstart 解析不了（非英文 locale 等）只探活不比时间——失败方向
+    是「多显示一个已关会话」，绝不误杀活会话。ps 不可用退化为 `os.kill(pid, 0)`。
+    """
+    if not want:
+        return set()
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "pid=,lstart=", "-p", ",".join(str(p) for p in want)],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {pid for pid in want if _pid_exists(pid)}
+    alive: set[int] = set()
+    for line in out.splitlines():
+        parts = line.split()
+        if not parts or not parts[0].isdigit():
+            continue
+        pid = int(parts[0])
+        expected = want.get(pid)
+        actual = _parse_lstart(" ".join(parts[1:]))
+        if expected is not None and actual is not None and abs(actual - expected) > _START_TOLERANCE_S:
+            continue
+        alive.add(pid)
+    return alive
+
+
+def _parse_lstart(raw: str) -> float | None:
+    """`ps -o lstart` 输出（如 "Thu Jul 9 17:18:34 2026"）→ epoch 秒；解析失败返回 None。"""
+    try:
+        return time.mktime(time.strptime(raw, "%a %b %d %H:%M:%S %Y"))
+    except ValueError:
+        return None
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:  # 含 PermissionError：进程在、只是无权发信号
+        return True
+    return True
+
+
+def registry_update_hint(sessions: list[LiveSession]) -> bool:
+    """列表里有 CC 会话、但本机 CC 没有会话注册表（版本太老）→ True，渲染层提示升级。"""
+    if not any(s.agent_id == "claude-code" for s in sessions):
+        return False
+    return not (Path(claude_home()) / "sessions").is_dir()
+
+
 def _heartbeat_fresh(heartbeat: tuple[str, datetime] | None, session_id: str, now: datetime) -> bool:
     return (heartbeat is not None and heartbeat[0] == session_id
             and (now - heartbeat[1]).total_seconds() < HEARTBEAT_FRESH_S)
@@ -211,8 +311,10 @@ def _scan_claude_sessions(cutoff: datetime, now: datetime,
                           heartbeat: tuple[str, datetime] | None,
                           max_prompts: int,
                           dirs: list[str] | None = None,
-                          term_map: dict[str, dict] | None = None) -> list[LiveSession]:
-    """dirs 供测试注入；默认复用 claude adapter 的目录解析（CLAUDE_CONFIG_DIR 等）。"""
+                          term_map: dict[str, dict] | None = None,
+                          live_sids: set[str] | None = None) -> list[LiveSession]:
+    """dirs 供测试注入；默认复用 claude adapter 的目录解析（CLAUDE_CONFIG_DIR 等）。
+    live_sids 是注册表探活结果：非 None 时不在其中的会话视为已关闭、直接不进列表。"""
     term_map = term_map or {}
     sessions: list[LiveSession] = []
     seen: set[str] = set()
@@ -235,6 +337,8 @@ def _scan_claude_sessions(cutoff: datetime, now: datetime,
                 _cache_put(path, max_prompts, parsed)
             if not parsed.prompts or parsed.session_id in seen:
                 continue
+            if live_sids is not None and parsed.session_id not in live_sids:
+                continue  # 注册表可用且不在册：进程已退出，最近关闭的会话不算活跃
             # 权威活动时间 = 内容里最后一条有效事件；CC 会对闲置会话做不改内容的 mtime 触碰
             last_activity = parsed.last_event or mtime_dt
             if last_activity < cutoff:

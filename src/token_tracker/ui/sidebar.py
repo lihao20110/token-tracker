@@ -175,7 +175,10 @@ def _clock_lines() -> list[Text]:
     return out
 
 
-def render_sidebar(sessions: list[LiveSession], spinner_frame: int = 0) -> Group:
+def render_sidebar(sessions: list[LiveSession], spinner_frame: int = 0,
+                   update_hint: bool = False) -> Group:
+    """update_hint=True 时在底部提示升级 Claude Code（老版本无会话注册表，
+    无法识别已关闭会话，列表可能混入已退出的会话）。"""
     lines: list[Text | Rule | _WrappedLine] = []
     header = Text(no_wrap=True, overflow="ellipsis")
     header.append("✳ tt sidebar", style=_S.accent)
@@ -236,4 +239,8 @@ def render_sidebar(sessions: list[LiveSession], spinner_frame: int = 0) -> Group
                     style=f"dim {_S.peach}",  # 与「下一步」标签同色系但 dim
                     max_lines=_HINT_MAX_WRAP,
                 ))
+    if update_hint:
+        lines.append(Text(""))
+        lines.append(_WrappedLine(text=t("sidebar_update_hint"), first=Text("⚠ ", style=_S.warn),
+                                  cont=None, style=_S.warn, max_lines=3))
     return Group(*lines)

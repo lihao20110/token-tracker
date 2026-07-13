@@ -1,5 +1,7 @@
 import json
 import os
+import subprocess
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -246,11 +248,107 @@ def test_scan_sessions_caps_at_max_sessions(monkeypatch):
                         last_activity=now - timedelta(minutes=i), state=WAITING,
                         prompts=[Prompt("x", now)])
             for i in range(12)]
+    monkeypatch.setattr(sidebar, "_live_claude_sids", lambda: None)  # 不读真实注册表
     monkeypatch.setattr(sidebar, "_scan_claude_sessions", lambda *a, **k: fake)
     monkeypatch.setattr(sidebar, "_scan_codex_sessions", lambda *a, **k: [])
     got = sidebar.scan_sessions()
     assert len(got) == 10
     assert [s.session_id for s in got] == [f"s{i}" for i in range(10)]  # 最新的 10 个
+
+
+# --- CC 会话注册表探活（已关闭的会话不算活跃）---
+
+def _reg_write(reg_dir: Path, pid: int, sid: str, started_at_ms: float | None = None) -> None:
+    reg_dir.mkdir(parents=True, exist_ok=True)
+    data: dict = {"pid": pid, "sessionId": sid}
+    if started_at_ms is not None:
+        data["startedAt"] = started_at_ms
+    (reg_dir / f"{pid}.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_live_claude_sids_missing_registry_returns_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(sidebar, "claude_home", lambda: str(tmp_path))
+    assert sidebar._live_claude_sids() is None  # 老版本 CC 无注册表：无法判断、不过滤
+
+
+def test_live_claude_sids_maps_alive_pids_to_sessions(tmp_path, monkeypatch):
+    monkeypatch.setattr(sidebar, "claude_home", lambda: str(tmp_path))
+    reg = tmp_path / "sessions"
+    _reg_write(reg, 111, "sa", 1783617514463)  # startedAt 毫秒 → 传给探活时转秒
+    _reg_write(reg, 222, "sb")
+    (reg / "333.json").write_text(json.dumps({"sessionId": "sd"}), encoding="utf-8")  # pid 从文件名兜底
+    (reg / "no-pid.json").write_text(json.dumps({"sessionId": "sc"}), encoding="utf-8")  # 无 pid 可依 → 跳过
+    (reg / "broken.json").write_text("{oops", encoding="utf-8")  # 坏文件只跳过自己
+
+    seen: dict[int, float | None] = {}
+
+    def fake_alive(want):
+        seen.update(want)
+        return {111, 333}
+
+    monkeypatch.setattr(sidebar, "_alive_pids", fake_alive)
+    assert sidebar._live_claude_sids() == {"sa", "sd"}
+    assert seen == {111: 1783617514.463, 222: None, 333: None}
+
+
+def test_alive_pids_own_process_and_start_time_guard():
+    me = os.getpid()
+    assert sidebar._alive_pids({}) == set()
+    assert me in sidebar._alive_pids({me: None})  # 不带启动时间：纯探活
+    # 注册的启动时间与真实启动时刻差太远 → 视为 pid 已被复用、判死
+    assert sidebar._alive_pids({me: 0.0}) == set()
+    # 与真实启动时刻一致（epoch 比对，不受 TZ 环境变量影响——procStart 字符串
+    # 按 CC 的时区渲染、ps lstart 按本进程 TZ 渲染，字符串比对会全军覆没）→ 存活
+    lstart = subprocess.run(["ps", "-o", "lstart=", "-p", str(me)],
+                            capture_output=True, text=True).stdout.strip()
+    real_start = sidebar._parse_lstart(" ".join(lstart.split()))
+    assert real_start is not None
+    assert me in sidebar._alive_pids({me: real_start})
+
+
+def test_parse_lstart_roundtrip_and_failure():
+    assert sidebar._parse_lstart("not a date") is None  # 非英文 locale 等解析失败 → 只探活不比时间
+    ts = sidebar._parse_lstart("Thu Jul 9 17:18:34 2026")
+    assert ts is not None
+    assert time.localtime(ts)[:6] == (2026, 7, 9, 17, 18, 34)
+
+
+def test_scan_claude_drops_sessions_not_in_registry(tmp_path):
+    base = _make_claude_base(tmp_path)
+    d = base / "-Users-x-project-alpha"
+    _write_jsonl(d / "open.jsonl", [_u("进程还开着")])
+    _write_jsonl(d / "closed.jsonl", [_u("已经退出的")])
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(hours=12)
+    got = _scan_claude_sessions(cutoff, now, None, 3, dirs=[str(base)], live_sids={"open"})
+    assert [s.session_id for s in got] == ["open"]  # 不在注册表 = 已关闭，不进列表
+    got = _scan_claude_sessions(cutoff, now, None, 3, dirs=[str(base)], live_sids=None)
+    assert {s.session_id for s in got} == {"open", "closed"}  # 注册表不可用 → 不过滤
+
+
+def test_registry_update_hint(tmp_path, monkeypatch):
+    monkeypatch.setattr(sidebar, "claude_home", lambda: str(tmp_path))
+    now = datetime.now(UTC)
+    cc = LiveSession(agent_id="claude-code", session_id="s", project="p",
+                     last_activity=now, state=WAITING)
+    cx = LiveSession(agent_id="codex", session_id="c", project="p",
+                     last_activity=now, state=WAITING)
+    assert sidebar.registry_update_hint([cc]) is True   # 有 CC 会话且无注册表 → 提示升级
+    assert sidebar.registry_update_hint([cx]) is False  # 纯 codex 列表与 CC 版本无关
+    (tmp_path / "sessions").mkdir()
+    assert sidebar.registry_update_hint([cc]) is False  # 注册表在 → 不提示
+
+
+def test_render_update_hint_line():
+    now = datetime.now(UTC)
+    s = LiveSession(agent_id="claude-code", session_id="s", project="proj",
+                    last_activity=now, state=WAITING, prompts=[Prompt("你好", now)])
+    console = Console(record=True, width=80)
+    console.print(render_sidebar([s], update_hint=True))
+    assert "Claude Code" in console.export_text()  # zh/en 文案都含该词
+    console = Console(record=True, width=80)
+    console.print(render_sidebar([s]))
+    assert "Claude Code" not in console.export_text()
 
 
 def test_read_status_returns_terminal_map(tmp_path, monkeypatch):

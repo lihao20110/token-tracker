@@ -26,6 +26,7 @@ _STRINGS = {
         "sidebar_tz_la": "洛杉矶",
         "sidebar_tz_ldn": "伦敦",
         "sidebar_jump_gone": "目标终端窗格不存在（可能已关闭）",
+        "sidebar_update_hint": "Claude Code 版本较旧，无法识别已关闭的会话，建议升级",
         # --- status.py（会话表列名与 tips）---
         "recent_sessions": "最近会话",
         "sessions_tips": "Tips: tt sessions <N> 调数量 · --sort cost|tokens|time|messages · --asc/--desc 改排序",
@@ -116,6 +117,7 @@ _STRINGS = {
         "sidebar_tz_la": "LA",
         "sidebar_tz_ldn": "London",
         "sidebar_jump_gone": "Target terminal pane no longer exists (probably closed)",
+        "sidebar_update_hint": "Claude Code is too old to detect closed sessions; consider updating",
         # --- status.py（会话表列名与 tips）---
         "recent_sessions": "Recent Sessions",
         "sessions_tips": "Tips: tt sessions <N> for count · --sort cost|tokens|time|messages · --asc/--desc to sort",

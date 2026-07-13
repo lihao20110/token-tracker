@@ -20,7 +20,7 @@ from .analyzer.aggregator import (
 from .analyzer.cost import calculate_cost
 from .hooks import is_setup, needs_update, setup, unsetup, update_hook
 from .i18n import t
-from .sidebar import scan_sessions
+from .sidebar import registry_update_hint, scan_sessions
 from .tz import system_tz
 from .ui import theme, themes
 from .ui.console import forced_color_console, get_console
@@ -229,8 +229,9 @@ def _cmd_sidebar(agents, args: list[str]) -> None:
     显式 --claude / --codex 才过滤。"""
     agent_ids = {a.id for a in agents}
     if "--once" in args or not sys.stdout.isatty():
+        sessions = scan_sessions(agent_ids=agent_ids)
         with forced_color_console():
-            get_console().print(render_sidebar(scan_sessions(agent_ids=agent_ids)))
+            get_console().print(render_sidebar(sessions, update_hint=registry_update_hint(sessions)))
         return
     from .ui.sidebar_app import SidebarApp  # 延迟 import：textual 仅 live 模式加载
     SidebarApp(agent_ids=agent_ids).run()

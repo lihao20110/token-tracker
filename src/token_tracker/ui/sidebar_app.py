@@ -18,7 +18,7 @@ from textual.widgets import Footer, Static
 
 from .. import config
 from ..i18n import t
-from ..sidebar import LiveSession, scan_sessions, terminal_info
+from ..sidebar import LiveSession, registry_update_hint, scan_sessions, terminal_info
 from .sidebar import render_sidebar
 from .themes import get_theme
 
@@ -103,12 +103,14 @@ class SidebarApp(App[None]):
         super().__init__(ansi_color=True)
         self._agent_ids = agent_ids
         self._sessions: list[LiveSession] = []
+        self._update_hint = False
         self._frame = 0
 
     def compose(self) -> ComposeResult:
-        self._sessions = scan_sessions(agent_ids=self._agent_ids)
+        self._scan()
         with VerticalScroll():
-            yield _SidebarBody(render_sidebar(self._sessions), id="sidebar-body")
+            yield _SidebarBody(render_sidebar(self._sessions, update_hint=self._update_hint),
+                               id="sidebar-body")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -118,11 +120,16 @@ class SidebarApp(App[None]):
         self.set_interval(REFRESH_SECONDS, self._refresh)
         self.set_interval(SPINNER_SECONDS, self._tick_spinner)
 
+    def _scan(self) -> None:
+        self._sessions = scan_sessions(agent_ids=self._agent_ids)
+        self._update_hint = registry_update_hint(self._sessions)
+
     def _update_body(self) -> None:
-        self.query_one("#sidebar-body", Static).update(render_sidebar(self._sessions, self._frame))
+        self.query_one("#sidebar-body", Static).update(
+            render_sidebar(self._sessions, self._frame, update_hint=self._update_hint))
 
     def _refresh(self) -> None:
-        self._sessions = scan_sessions(agent_ids=self._agent_ids)
+        self._scan()
         self._update_body()
 
     def _tick_spinner(self) -> None:
