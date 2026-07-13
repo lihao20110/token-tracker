@@ -18,8 +18,11 @@ from .ui import themes
 CONFIG_DIR = os.path.expanduser("~/.config/token-tracker")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 # CC statusline 缓存的单一权威路径（statusline 脚本写、tt status / adapters.rate_limits 读）。
-# 注意 templates/claude_statusline.py 因脚本独立运行硬编码了同一路径——改这里必须同步改模板。
+# 注意两个 statusline 模板因脚本独立运行硬编码了对应缓存路径——改这里必须同步改模板。
 STATUS_FILE = os.path.join(CONFIG_DIR, "tt-status.json")
+# Codex Stop hook 采集的会话→终端窗格映射。与 CC 心跳/status 缓存分文件，避免两个
+# Agent 并发 read-modify-write 同一 JSON 时互相覆盖；sidebar 读取时再合并。
+TERMINAL_MAP_FILE = os.path.join(CONFIG_DIR, "tt-terminal-map.json")
 SCHEMA_VERSION = 1
 
 # 引导版本：每次新增"值得让老用户重新走一遍 setup"的配置项时手动 +1（只能整数、一次 +1）。

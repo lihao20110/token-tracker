@@ -28,6 +28,7 @@ def _isolate_real_home(tmp_path, monkeypatch):
     monkeypatch.setattr(hooks, "CODEX_CONFIG", str(home / ".codex" / "config.toml"))
     monkeypatch.setattr(hooks, "CODEX_STATUSLINE_HOOK_PATH", str(tt / "codex-statusline.py"))
     monkeypatch.setattr(hooks, "STATUS_FILE", str(tt / "tt-status.json"))
+    monkeypatch.setattr(hooks, "TERMINAL_MAP_FILE", str(tt / "tt-terminal-map.json"))
     monkeypatch.setattr(hooks, "CC_BACKUP_PATH", str(tt / "cc-backup.json"))
     monkeypatch.setattr(hooks, "CODEX_BACKUP_LEGACY", str(tt / "codex-backup.json"))
     monkeypatch.setattr(hooks, "_LEGACY_PATHS", [])
@@ -35,6 +36,7 @@ def _isolate_real_home(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_DIR", str(cfg))
     monkeypatch.setattr(config, "CONFIG_PATH", str(cfg / "config.json"))
     monkeypatch.setattr(config, "STATUS_FILE", str(cfg / "tt-status.json"))
+    monkeypatch.setattr(config, "TERMINAL_MAP_FILE", str(cfg / "tt-terminal-map.json"))
     monkeypatch.setattr(config, "_LEGACY_THEME_PATH", str(cfg / "theme.json"))
     monkeypatch.setattr(config, "_LEGACY_LANG_PATH", str(cfg / "lang.json"))
 
@@ -169,9 +171,56 @@ def test_codex_statusline_render_injects_version():
     compile(rendered, "<codex-statusline>", "exec")
 
 
+def test_codex_statusline_records_terminal_map_without_touching_cc_status(tmp_path):
+    # Codex Stop hook 从精确 transcript 读 session_meta.id，采集当前终端环境并按 session 合并；
+    # 单独落 tt-terminal-map.json，不能覆盖 CC 心跳/rate limit 使用的 tt-status.json。
+    script = tmp_path / "codex-statusline.py"
+    script.write_text(hooks._render_codex_statusline_hook(), encoding="utf-8")
+    cfg = tmp_path / ".config" / "token-tracker"
+    cfg.mkdir(parents=True)
+    status_path = cfg / "tt-status.json"
+    status_path.write_text(json.dumps({"session_id": "claude-live", "rate_limits": {"five_hour": 12}}),
+                           encoding="utf-8")
+    env = dict(os.environ, HOME=str(tmp_path), ITERM_SESSION_ID="w0t1p0:AAA-111", TMUX_PANE="%7")
+
+    def _run(session_id):
+        rollout = tmp_path / f"{session_id or 'missing'}.jsonl"
+        payload = {"cwd": str(tmp_path)}
+        if session_id:
+            rollout.write_text(json.dumps({
+                "type": "session_meta",
+                "payload": {"id": session_id, "cwd": str(tmp_path)},
+            }) + "\n", encoding="utf-8")
+            payload["transcript_path"] = str(rollout)
+        subprocess.run([sys.executable, str(script)], input=json.dumps(payload),
+                       text=True, capture_output=True, env=env, check=True)
+
+    _run("codex-a")
+    env["ITERM_SESSION_ID"] = "w0t2p0:BBB-222"
+    _run("codex-b")
+    fallback = tmp_path / ".codex" / "sessions" / "fallback.jsonl"
+    fallback.parent.mkdir(parents=True)
+    fallback.write_text("\n".join(json.dumps(row) for row in [
+        {"type": "session_meta", "payload": {"id": "wrong-fallback", "cwd": str(tmp_path)}},
+        {"type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {}}}},
+    ]) + "\n", encoding="utf-8")
+    _run("")  # 无精确 ID 时最近文件只供显示，不得把当前窗格错绑给 fallback 会话，也不得清表
+
+    term_map = json.loads((cfg / "tt-terminal-map.json").read_text())["_terminal_map"]
+    assert term_map["codex-a"] == {"iterm": "w0t1p0:AAA-111", "tmux": "%7"}
+    assert term_map["codex-b"] == {"iterm": "w0t2p0:BBB-222", "tmux": "%7"}
+    assert "wrong-fallback" not in term_map
+    assert json.loads(status_path.read_text()) == {
+        "session_id": "claude-live", "rate_limits": {"five_hour": 12},
+    }
+
+
 def test_codex_statusline_install_uninstall_roundtrip(tmp_path, monkeypatch):
     # 末尾追加 tt Stop 段、保留用户已有 Stop hook；幂等；卸载删净 tt 段、留用户项。
     monkeypatch.setattr(hooks, "CODEX_STATUSLINE_HOOK_PATH", str(tmp_path / "tt-statusline.py"))
+    terminal_map = tmp_path / "tt-terminal-map.json"
+    terminal_map.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(hooks, "TERMINAL_MAP_FILE", str(terminal_map))
     base = (
         '[tui]\nstatus_line = ["project"]\n\n'
         '[[hooks.Stop]]\n\n'
@@ -182,6 +231,7 @@ def test_codex_statusline_install_uninstall_roundtrip(tmp_path, monkeypatch):
     assert hooks._install_codex_statusline(installed, "python3") == installed  # 幂等
     removed = hooks._uninstall_codex_statusline(installed)
     assert "tt-statusline" not in removed and 'command = "mine"' in removed
+    assert not terminal_map.exists()
 
 
 def test_codex_statusline_install_updates_stale_python(tmp_path, monkeypatch):

@@ -24,9 +24,9 @@ def _session(sid, agent, model, start, dur, total, cost, msgs, active=None):
 
 def test_build_status_data_merges_and_per_agent(monkeypatch):
     # 头图合并汇总 + per-agent 拆分 + session 合并带 agent_id 且按 cost 倒序（entries 给跨度，避免被 0min 过滤）。
-    now = datetime.now(UTC)
+    # 固定在系统时区当天中午，避免午夜后前 40 分钟里的减法跨到前一天、被 status 正确过滤。
+    now = datetime.now(cli.system_tz() or UTC).replace(hour=12, minute=0, second=0, microsecond=0)
     data_map = {
-        # 用「现在前 1 小时内」避免 UTC 凌晨跑 CI 时跨日被 _build_status_data 今天过滤掉
         "claude-code": [  # s1 跨度 10min
             _entry("claude-code", "s1", "claude-opus-4-8", now - timedelta(minutes=30), out=500),
             _entry("claude-code", "s1", "claude-opus-4-8", now - timedelta(minutes=20), out=100),
@@ -53,7 +53,7 @@ def test_build_status_data_merges_and_per_agent(monkeypatch):
 
 def test_build_status_data_filters_short_sessions(monkeypatch):
     # 5min 以下的短会话（0min 单条 / 3min）从列表 + Sessions 计数中过滤掉。
-    now = datetime.now(UTC)
+    now = datetime.now(cli.system_tz() or UTC).replace(hour=12, minute=0, second=0, microsecond=0)
     data_map = {"claude-code": [
         _entry("claude-code", "s1", "claude-opus-4-8", now - timedelta(minutes=30)),
         _entry("claude-code", "s1", "claude-opus-4-8", now - timedelta(minutes=22)),  # s1: 8min → 保留

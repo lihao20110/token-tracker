@@ -10,8 +10,12 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+
+TERMINAL_MAP_FILE = os.path.join(os.path.expanduser("~/.config/token-tracker"), "tt-terminal-map.json")
+MAX_TERMINAL_MAPPINGS = 20
 
 # 配色由 tt setup / update_hook / tt theme set 烘焙时注入（跟随当前主题，与 CC statusline / CLI 报表同源）。
 # Codex TUI 实测支持 24-bit truecolor，故只注入 truecolor 一套（不像 CC statusline 还需 256 兜底）。
@@ -61,9 +65,10 @@ def _total_tokens(info):
 
 
 def _parse_session(path):
-    """解析 session jsonl → (cwd, 最后一个 token_count 的 info, model, effort)。
+    """解析 session jsonl → (session_id, cwd, 最后一个 token_count 的 info, model, effort)。
     model/effort 取最后一个 turn_context（跟随中途换模型/调 effort）。"""
     from token_tracker.adapters.util import iter_jsonl_dicts
+    session_id = ""
     cwd = ""
     info = None
     model = effort = ""
@@ -71,32 +76,91 @@ def _parse_session(path):
         p = d.get("payload", {})
         t = d.get("type")
         if t == "session_meta":
+            session_id = p.get("id", "") or session_id
             cwd = p.get("cwd", "")
         elif t == "turn_context":  # 含 model（gpt-5.5）+ effort（high）
             model = p.get("model") or model
             effort = p.get("effort") or effort
         elif p.get("type") == "token_count" and p.get("info"):
             info = p["info"]
-    return cwd, info, model, effort
+    return session_id, cwd, info, model, effort
 
 
 def _current_session(payload):
-    """优先按 Stop payload 的 transcript_path 精确定位当前会话；拿不到再回退最近改动文件。"""
+    """返回会话解析结果 + 是否由 Stop payload 的 transcript_path 精确定位。
+
+    最近文件回退只供伪 statusline 尽力显示；终端映射不能用回退结果，否则多 Codex 会话
+    并发时可能把当前窗格错误绑定到别的会话。
+    """
     try:
         tp = payload.get("transcript_path")
         if tp and os.path.exists(tp):
             r = _parse_session(Path(tp))
-            if r[1]:
-                return r
+            if r[0] or r[2]:
+                return (*r, True)
         from token_tracker.adapters import codex
         for f in sorted(Path(codex.SESSIONS_DIR).rglob("*.jsonl"),
                         key=lambda p: p.stat().st_mtime, reverse=True)[:3]:
             r = _parse_session(f)
-            if r[1]:
-                return r
+            if r[2]:
+                return (*r, False)
     except Exception:
         pass
-    return "", None, "", ""
+    return "", "", None, "", "", False
+
+
+def _record_terminal_map(session_id):
+    """记录当前 Codex 会话所在窗格，供普通 `tt sidebar` 点击项目名跳转。
+
+    单独落文件，不和 CC statusline 的心跳/status JSON 竞争写；同一文件的多个 Codex Stop
+    hook 用 flock 串行合并（Windows 无 iTerm/tmux，缺 fcntl 时仍保留原子替换兜底）。
+    """
+    term = {}
+    if os.environ.get("ITERM_SESSION_ID"):
+        term["iterm"] = os.environ["ITERM_SESSION_ID"]
+    if os.environ.get("TMUX_PANE"):
+        term["tmux"] = os.environ["TMUX_PANE"]
+    if not session_id or not term:
+        return
+
+    tmp = None
+    lock = None
+    try:
+        parent = os.path.dirname(TERMINAL_MAP_FILE)
+        os.makedirs(parent, exist_ok=True)
+        lock = open(TERMINAL_MAP_FILE + ".lock", "a+", encoding="utf-8")
+        try:
+            import fcntl
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            pass
+        try:
+            with open(TERMINAL_MAP_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+        term_map = data.get("_terminal_map") if isinstance(data, dict) else None
+        if not isinstance(term_map, dict):
+            term_map = {}
+        term_map.pop(session_id, None)
+        term_map[session_id] = term
+        for key in list(term_map)[:-MAX_TERMINAL_MAPPINGS]:
+            del term_map[key]
+        fd, tmp = tempfile.mkstemp(dir=parent, suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"_terminal_map": term_map}, f)
+        os.replace(tmp, TERMINAL_MAP_FILE)
+        tmp = None
+    except OSError:
+        pass
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        if lock:
+            lock.close()
 
 
 def _ctx_pct(info):
@@ -191,7 +255,13 @@ def main():
     except Exception:
         pass
 
-    cwd, info, model, effort = _current_session(payload)
+    session_id, cwd, info, model, effort, exact_session = _current_session(payload)
+    payload_session_id = payload.get("session_id") or payload.get("thread_id")
+    terminal_session_id = session_id if exact_session else ""
+    if isinstance(payload_session_id, str) and payload_session_id:
+        session_id = payload_session_id
+        terminal_session_id = payload_session_id
+    _record_terminal_map(terminal_session_id)
     cwd = payload.get("cwd") or cwd
     ctx = _ctx_pct(info) if info else None
     now_ts = int(datetime.now(timezone.utc).timestamp())

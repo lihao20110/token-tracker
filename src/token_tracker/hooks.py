@@ -38,8 +38,9 @@ CODEX_DIR = _CODEX
 CODEX_CONFIG = os.path.join(CODEX_DIR, "config.toml")     # 改 Codex 配置，留 agent 目录
 CODEX_STATUSLINE_HOOK_PATH = os.path.join(_TT, "codex-statusline.py")
 STATUS_FILE = config.STATUS_FILE                          # CC statusline 缓存（单一权威定义在 config）
+TERMINAL_MAP_FILE = config.TERMINAL_MAP_FILE              # Codex Stop hook 采集的终端定位映射
 HOOK_VERSION = "2.1"  # 2.0: 采集 _terminal_map（sidebar 点击跳转）；2.1: 共享状态无条件随帧携带、防异常帧清表
-STATUSLINE_HOOK_VERSION = "1.1"
+STATUSLINE_HOOK_VERSION = "1.2"  # 1.2: 采集 Codex 会话终端定位，供 tt sidebar 点击跳转
 
 CC_BACKUP_PATH = os.path.join(_TT, "cc-backup.json")
 CODEX_BACKUP_LEGACY = os.path.join(_TT, "codex-backup.json")  # 老用户残留，unsetup 时还能恢复
@@ -162,6 +163,8 @@ def _uninstall_codex_statusline(content: str) -> str:
     """删 Codex statusline 脚本 + 从 content 移除 tt 追加的 Stop hook 段（不动用户其它）。"""
     if os.path.exists(CODEX_STATUSLINE_HOOK_PATH):
         os.remove(CODEX_STATUSLINE_HOOK_PATH)
+    if os.path.exists(TERMINAL_MAP_FILE):
+        os.remove(TERMINAL_MAP_FILE)
     return _CODEX_STATUSLINE_REGEX.sub("\n", content)
 
 

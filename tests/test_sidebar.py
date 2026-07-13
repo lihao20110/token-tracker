@@ -3,6 +3,7 @@ import os
 import subprocess
 import time
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -21,13 +22,15 @@ from token_tracker.sidebar import (
     _parse_codex,
     _scan_claude_sessions,
 )
-from token_tracker.ui.sidebar import render_sidebar
+from token_tracker.ui.sidebar import render_sidebar, render_split_sidebar
 
 
 @pytest.fixture(autouse=True)
-def _clear_parse_cache():
+def _clear_parse_cache(tmp_path, monkeypatch):
     # 模块级解析缓存按 (mtime, size) 命中，tmp_path 各测试独立但防跨测试串味
     sidebar._parse_cache.clear()
+    # Codex 终端映射是用户级缓存；测试默认指向临时空文件，不能读到主人真实会话。
+    monkeypatch.setattr(sidebar.config, "TERMINAL_MAP_FILE", str(tmp_path / "tt-terminal-map.json"))
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> Path:
@@ -351,18 +354,37 @@ def test_render_update_hint_line():
     assert "Claude Code" not in console.export_text()
 
 
-def test_read_status_returns_terminal_map(tmp_path, monkeypatch):
+def test_read_status_merges_claude_and_codex_terminal_maps(tmp_path, monkeypatch):
     status = tmp_path / "tt-status.json"
     status.write_text(json.dumps({
         "session_id": "s-live", "_received_at": datetime.now(UTC).isoformat(),
         "_terminal_map": {"s-live": {"iterm": "w0t1p0:AAA-BBB", "tmux": "%3"}},
     }), encoding="utf-8")
+    codex_map = tmp_path / "tt-terminal-map.json"
+    codex_map.write_text(json.dumps({
+        "_terminal_map": {"cx-live": {"iterm": "w0t2p0:CODEX"}},
+    }), encoding="utf-8")
     monkeypatch.setattr(sidebar.config, "STATUS_FILE", str(status))
+    monkeypatch.setattr(sidebar.config, "TERMINAL_MAP_FILE", str(codex_map))
     hb, term_map = sidebar._read_status()
     assert hb is not None and hb[0] == "s-live"
     assert term_map["s-live"]["iterm"] == "w0t1p0:AAA-BBB"
+    assert term_map["cx-live"]["iterm"] == "w0t2p0:CODEX"
     assert sidebar.terminal_info("s-live")["tmux"] == "%3"
+    assert sidebar.terminal_info("cx-live")["iterm"] == "w0t2p0:CODEX"
     assert sidebar.terminal_info("unknown") == {}
+
+
+def test_read_status_returns_codex_map_without_claude_status(tmp_path, monkeypatch):
+    codex_map = tmp_path / "tt-terminal-map.json"
+    codex_map.write_text(json.dumps({
+        "_terminal_map": {"cx-only": {"tmux": "%9"}},
+    }), encoding="utf-8")
+    monkeypatch.setattr(sidebar.config, "STATUS_FILE", str(tmp_path / "missing-status.json"))
+    monkeypatch.setattr(sidebar.config, "TERMINAL_MAP_FILE", str(codex_map))
+    hb, term_map = sidebar._read_status()
+    assert hb is None
+    assert term_map == {"cx-only": {"tmux": "%9"}}
 
 
 def test_scan_claude_attaches_terminal(tmp_path):
@@ -373,6 +395,24 @@ def test_scan_claude_attaches_terminal(tmp_path):
     got = _scan_claude_sessions(now - timedelta(hours=12), now, None, 3,
                                 dirs=[str(base)], term_map=term_map)
     assert got[0].terminal == {"iterm": "w0t2p0:CCC"}
+
+
+def test_scan_codex_attaches_terminal(tmp_path):
+    base = tmp_path / "sessions"
+    base.mkdir()
+    rows = [
+        {"timestamp": _iso(70), "type": "session_meta",
+         "payload": {"id": "cx-1", "cwd": "/tmp/project-codex"}},
+        {"timestamp": _iso(60), "type": "event_msg",
+         "payload": {"type": "user_message", "message": "修复跳转"}},
+    ]
+    _write_jsonl(base / "rollout.jsonl", rows)
+    now = datetime.now(UTC)
+    got = sidebar._scan_codex_sessions(
+        now - timedelta(hours=5), now, None, 3, sessions_dir=str(base),
+        term_map={"cx-1": {"iterm": "w0t3p0:CODEX"}},
+    )
+    assert got[0].terminal == {"iterm": "w0t3p0:CODEX"}
 
 
 def test_render_head_click_meta_and_link_style():
@@ -614,6 +654,67 @@ def test_render_next_hint_and_spinner_frame():
     out = console.export_text()
     assert "验证后我们再发版" in out
     assert "✢ proj" in out and "✳ proj" in out  # 帧不同 → 会话头星形符号轮转（标题自带 ✳，不数全局）
+
+
+def test_split_sidebar_only_shows_latest_ten_prompts_newest_first_as_tree():
+    now = datetime.now(UTC)
+    prompts = [Prompt(f"[P{i:02d}]", now + timedelta(seconds=i)) for i in range(12)]
+    sessions = [LiveSession(agent_id="claude-code", session_id="s1", project="hidden-project",
+                            branch="hidden-branch", last_activity=now, state=WAITING,
+                            prompts=prompts, next_hint="hidden-next-step")]
+    console = Console(record=True, width=40, force_terminal=True)
+    console.print(render_split_sidebar(sessions))
+    lines = console.export_text().splitlines()
+    output = "\n".join(lines)
+
+    assert lines[0].startswith("├ [P11]")  # 第一行直接是最新提示词，无标题 / 时钟
+    assert "hidden-project" not in output
+    assert "hidden-branch" not in output
+    assert "hidden-next-step" not in output
+    assert "tt sidebar" not in output
+    assert "[P00]" not in output and "[P01]" not in output
+    positions = [next(i for i, line in enumerate(lines) if token in line)
+                 for token in (f"[P{i:02d}]" for i in range(11, 1, -1))]
+    assert positions == sorted(positions)
+    assert all(second - first == 2 for first, second in pairwise(positions))
+    assert all(lines[first + 1] == "│" for first in positions[:-1])
+    assert lines[positions[-1]].startswith("└ [P02]")
+
+    default_console = Console(record=True, width=40)
+    default_console.print(render_sidebar(sessions))
+    default_output = default_console.export_text()
+    assert "hidden-project" in default_output and "hidden-next-step" in default_output
+
+
+def test_split_sidebar_shows_complete_prompt_and_highlights_latest_full_width():
+    from rich.cells import cell_len
+
+    now = datetime.now(UTC)
+    full_text = "完整内容" * 100 + "\n第二段"
+    sessions = [LiveSession(agent_id="claude-code", session_id="s1", project="proj",
+                            last_activity=now, state=WAITING,
+                            prompts=[Prompt("older", now), Prompt(full_text, now)])]
+    console = Console(width=30, force_terminal=True)
+    options = console.options.update(width=30)
+    lines = console.render_lines(render_split_sidebar(sessions), options, pad=False)
+    old_line = next(line for line in lines if "older" in "".join(segment.text for segment in line))
+    latest_start = next(i for i, line in enumerate(lines)
+                        if "完整内容" in "".join(segment.text for segment in line))
+    latest_end = next(i for i in range(latest_start, len(lines))
+                      if "".join(segment.text for segment in lines[i]).rstrip() == "│")
+    latest_lines = lines[latest_start:latest_end]
+
+    assert all(segment.style is None or segment.style.bgcolor is None for segment in old_line)
+    for line in latest_lines:
+        assert cell_len("".join(segment.text for segment in line)) == 30
+        assert all(segment.style is not None and segment.style.bgcolor is not None
+                   for segment in line if segment.text)
+    rendered_latest = "".join(
+        "".join(segment.text for segment in line)[2:].rstrip()
+        for line in latest_lines
+    )
+    assert rendered_latest.count("完整内容") == 100
+    assert "第二段" in rendered_latest
 
 
 def test_render_hint_wraps_to_three_lines_then_ellipsis():

@@ -6,7 +6,8 @@
 - Codex rollout jsonl（`~/.codex/sessions/`）——`user_message` 事件干净可靠，
   `task_started` / `task_complete` 供状态判定。
 - 心跳 `config.STATUS_FILE`（CC statusline 每帧落盘）——`session_id` + `_received_at`
-  判「正在跑」，白拿、零新增开销。
+  判「正在跑」，白拿、零新增开销；Codex Stop hook 的终端定位单独落
+  `config.TERMINAL_MAP_FILE`，读取时与 CC status 文件里的映射合并。
 - CC 会话注册表 `<claude_home>/sessions/<pid>.json`（实测 CC 2.1.205+ 维护，正常退出
   即删文件）——含 sessionId / pid / procStart，据此把「transcript 还在窗口期但进程
   已死」的会话判为已关闭、不进列表；目录不存在（老版本 CC）不过滤并提示升级。
@@ -151,25 +152,49 @@ def _infer_state(now: datetime, last_activity: datetime,
     return WAITING
 
 
+def _read_terminal_map(path: str) -> dict[str, dict]:
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    term_map = data.get("_terminal_map") if isinstance(data, dict) else None
+    if not isinstance(term_map, dict):
+        return {}
+    return {
+        session_id: info
+        for session_id, info in term_map.items()
+        if isinstance(session_id, str) and isinstance(info, dict)
+    }
+
+
 def _read_status() -> tuple[tuple[str, datetime] | None, dict[str, dict]]:
     """读 CC statusline 落盘文件一次，返回 (心跳, 终端定位 map)。
 
     心跳 = (session_id, 最近一帧时间)，只反映最近渲染的那一个会话；
-    终端定位 = `_terminal_map`（statusline ≥2.0 采集的 ITERM_SESSION_ID/TMUX_PANE，
-    按 session_id 隔离），旧版脚本没有该字段时返回空 dict、点击跳转优雅降级。
+    终端定位 = CC statusline ≥2.0 写入 STATUS_FILE 的 `_terminal_map` + Codex Stop hook
+    写入 TERMINAL_MAP_FILE 的 `_terminal_map`，按 session_id 合并；旧版脚本没有字段时
+    返回空 dict、点击跳转优雅降级。
     """
     try:
         with open(config.STATUS_FILE, encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, json.JSONDecodeError):
-        return None, {}
+        data = {}
     term_map = data.get("_terminal_map")
     if not isinstance(term_map, dict):
         term_map = {}
+    else:
+        term_map = {
+            session_id: info
+            for session_id, info in term_map.items()
+            if isinstance(session_id, str) and isinstance(info, dict)
+        }
+    term_map.update(_read_terminal_map(config.TERMINAL_MAP_FILE))
     sid = data.get("session_id") or ""
     try:
         ts = datetime.fromisoformat(data.get("_received_at", ""))
-    except ValueError:
+    except (TypeError, ValueError):
         return None, term_map
     if not sid:
         return None, term_map
@@ -465,7 +490,7 @@ def _scan_codex_sessions(cutoff: datetime, now: datetime,
                          max_prompts: int,
                          sessions_dir: str | None = None,
                          term_map: dict[str, dict] | None = None) -> list[LiveSession]:
-    term_map = term_map or {}  # Codex 伪 statusline 暂未采集终端定位，通常为空、点击不可用
+    term_map = term_map or {}  # Codex Stop hook ≥1.2 采集；未启用/尚未跑过一帧时为空、点击优雅降级
     base = Path(sessions_dir if sessions_dir is not None else codex_adapter.SESSIONS_DIR)
     if not base.is_dir():
         return []

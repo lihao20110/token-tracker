@@ -1,8 +1,10 @@
-"""tt sidebar 面板：活跃会话列表 + 各自最近提示词，为窄窗格（终端分屏 / tmux pane）常驻设计。
+"""tt sidebar 的默认总览与自动分屏专属提示词视图。
 
-每会话一块：状态点 + 项目名 + agent/模型 + 距上次活动；下面缩进列最近提示词
+默认总览每会话一块：状态点 + 项目名 + agent/模型 + 距上次活动；下面缩进列最近提示词
 （时间正序，最新一条常亮、更早的调暗）。头行单行截断不折行；提示词最多折
 `_PROMPT_MAX_LINES` 行、超出末行加省略号、正文右侧固定留 `_RIGHT_PAD` 格空白。
+自动 1/3 分屏走独立 `render_split_sidebar`：只列当前会话最近 10 条完整提示词
+（时间倒序、树状连接、最新一条全宽高亮），不影响默认总览。
 """
 
 from datetime import UTC, datetime
@@ -17,7 +19,7 @@ from rich.text import Text
 from ..i18n import t
 from ..sidebar import ATTENTION, IDLE, RUNNING, WAITING, LiveSession
 from .format import AGENT_SHORT, _model_short
-from .theme import _S
+from .theme import _S, get_active_theme
 
 # 头部时区时钟（显式 ZoneInfo，不受 TZ 环境变量影响）：北京=主人常驻、
 # 洛杉矶=OpenAI/Anthropic 等湾区实验室、伦敦=DeepMind + 欧洲 AI 圈（巴黎仅差 1h）
@@ -47,6 +49,7 @@ def _click_style(session_id: str) -> Style:
 _PROMPT_MAX_LINES = 2  # 每条提示词最多折 N 行，超出末行省略号
 _HINT_MAX_WRAP = 3     # 「下一步」每行原文最多折 N 行，超出末行省略号（主人定：先正常折行，3 行放不下再省略）
 _RIGHT_PAD = 2         # 正文右侧留白，折行不顶到窗格右缘
+SPLIT_MAX_PROMPTS = 10  # 自动 1/3 分屏默认显示当前会话最近 N 条完整提示词
 
 
 def _state_style(state: str) -> str:
@@ -153,6 +156,31 @@ class _WrappedLine:
             yield out
 
 
+class _SplitPrompt:
+    """分屏提示词：保留原始段落、无限制折行，并用 first / cont 延续树状轨道。"""
+
+    def __init__(self, text: str, first: Text, cont: Text, latest: bool) -> None:
+        self.text = text
+        self.first = first
+        self.cont = cont
+        self.latest = latest
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        avail = max(1, options.max_width - self.first.cell_len - _RIGHT_PAD)
+        background_style = f"on {get_active_theme()['base']['overlay0']}"
+        first_visual_line = True
+        for raw_line in self.text.splitlines() or [""]:
+            for piece in _fold(raw_line, avail):
+                out = Text(no_wrap=True)
+                out.append_text(self.first if first_visual_line else self.cont)
+                out.append(piece, style="" if self.latest else _S.dim)
+                if self.latest:
+                    out.stylize(background_style)
+                    out.append(" " * max(0, options.max_width - out.cell_len), style=background_style)
+                yield out
+                first_visual_line = False
+
+
 def _clock_lines() -> list[Text]:
     """三时区时钟行：标签（等宽对齐）+ 月-日 周几 时:分:秒。时区数据缺失时静默跳过。"""
     weekdays = t("weekday_grid").split(",")
@@ -173,6 +201,27 @@ def _clock_lines() -> list[Text]:
         ln.append(local.strftime("%H:%M:%S"))
         out.append(ln)
     return out
+
+
+def render_split_sidebar(sessions: list[LiveSession]) -> Group:
+    """自动 1/3 分屏专属视图：只显示当前会话最近 10 条完整提示词。"""
+    lines: list[Text | _SplitPrompt] = []
+    prompts = sessions[0].prompts[-SPLIT_MAX_PROMPTS:] if sessions else []
+    if not prompts:
+        lines.append(Text(t("sidebar_empty"), style=_S.dim))
+        return Group(*lines)
+
+    for index, prompt in enumerate(reversed(prompts)):
+        last = index == len(prompts) - 1
+        lines.append(_SplitPrompt(
+            prompt.text,
+            first=Text("└ " if last else "├ ", style=_S.dim),
+            cont=Text("  " if last else "│ ", style=_S.dim),
+            latest=index == 0,
+        ))
+        if not last:
+            lines.append(Text("│", style=_S.dim))
+    return Group(*lines)
 
 
 def render_sidebar(sessions: list[LiveSession], spinner_frame: int = 0,

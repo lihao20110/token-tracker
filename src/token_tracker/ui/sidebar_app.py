@@ -1,7 +1,10 @@
-"""tt sidebar 的 Textual 壳：备用屏常驻 + 滚动 + 定时刷新。
+"""tt sidebar 的 Textual 壳：备用屏常驻 + 滚动 + 鼠标选择自动复制 + 定时刷新。
 
-数据与渲染完全复用 `sidebar.scan_sessions` + `ui.sidebar.render_sidebar`——Rich renderable
-直接塞进 Static 整帧更新，滚动位置由 VerticalScroll 容器保持（滚轮 / 方向键 / PgUp/PgDn）。
+数据复用 `sidebar.scan_sessions`；默认总览走 `ui.sidebar.render_sidebar`，自动 1/3 分屏走
+`render_split_sidebar`。Rich renderable 直接塞进 Static 整帧更新，滚动位置由
+VerticalScroll 容器保持（滚轮 / 方向键 / PgUp/PgDn）。
+Rich Group 由 _SidebarBody 补 Textual 选择偏移与文本提取；拖拽时暂停整帧更新、松手自动复制。
+本地分屏运行器可传 `initial_sessions` 复用预扫描首帧，compose 不再重复冷扫描。
 配色继承终端：`ansi_color=True` + `ansi-dark/light` 主题让 app chrome（背景/滚动条/Footer）
 走终端 ANSI 调色板、不糊 Textual 自己的深色底；正文内容色仍由 tt 主题（`_S` 运行时代理）给，
 `tt sidebar --theme <名>` 可临时切。明暗跟随 tt 主题的 is_light。
@@ -10,16 +13,23 @@
 """
 
 import subprocess
+from typing import Literal
 
+from rich.console import Group
+from rich.segment import Segment
 from rich.style import Style as RichStyle
+from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
+from textual.selection import Selection
+from textual.strip import Strip
 from textual.widgets import Footer, Static
 
 from .. import config
 from ..i18n import t
 from ..sidebar import LiveSession, registry_update_hint, scan_sessions, terminal_info
-from .sidebar import render_sidebar
+from .sidebar import SPLIT_MAX_PROMPTS, render_sidebar, render_split_sidebar
 from .themes import get_theme
 
 REFRESH_SECONDS = 5.0
@@ -80,6 +90,49 @@ class _SidebarBody(Static):
     def link_style_hover(self) -> RichStyle:
         return RichStyle(color=get_theme(config.resolve_theme())["base"]["blue"], underline=True)
 
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        """从当前已渲染行提取选区，保证复制结果与窄窗格折行完全一致。"""
+        if self._dirty_regions:
+            self._render_content()
+        text = "\n".join(line.text.rstrip() for line in self._render_cache.lines)
+        return selection.extract(text), "\n"
+
+    def render_line(self, y: int) -> Strip:
+        """给 Rich Group 补选择偏移，并在选区上叠加 Textual 高亮样式。
+
+        Textual 自带 Strip.apply_offsets() 会给每个 Segment 新建 offset Style，并把
+        新 Style 放在合并右侧；Rich 因此用 offset 的 link_id 覆盖整行共用的点击
+        link_id，hover 只能命中鼠标所在的一段。这里反向合并，让点击 link_id 保持
+        统一，同时仍给每段写入准确的选择坐标。
+        """
+        line = super().render_line(y)
+        selection = self.text_selection
+        if selection is not None and (span := selection.get_span(y)) is not None:
+            start, end = span
+            line_text = Text()
+            for segment in line:
+                if not segment.control:
+                    line_text.append(segment.text, segment.style)
+            line_text.stylize(
+                self.screen.get_component_rich_style("screen--selection"),
+                start,
+                None if end == -1 else end,
+            )
+            line = Strip(line_text.render(self.app.console), line.cell_length)
+        offset_x = 0
+        segments: list[Segment] = []
+        for segment in line:
+            offset_style = RichStyle.from_meta({"offset": (offset_x, y)})
+            style = offset_style + segment.style if segment.style else offset_style
+            segments.append(Segment(segment.text, style, segment.control))
+            offset_x += len(segment.text)
+        return Strip(segments, line.cell_length)
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        app = self.app
+        if event.button == 1 and isinstance(app, SidebarApp):
+            app._text_dragging = True
+
 
 class SidebarApp(App[None]):
     BINDINGS = [
@@ -98,20 +151,33 @@ class SidebarApp(App[None]):
     #sidebar-body { width: 1fr; }
     """
 
-    def __init__(self, agent_ids: set[str] | None = None) -> None:
+    def __init__(self, agent_ids: set[str] | None = None,
+                 variant: Literal["default", "split"] = "default",
+                 initial_sessions: list[LiveSession] | None = None) -> None:
         # ansi_color=True：不把 ANSI 色转成 Textual 主题色，背景用终端自身默认色
         super().__init__(ansi_color=True)
         self._agent_ids = agent_ids
-        self._sessions: list[LiveSession] = []
-        self._update_hint = False
+        self._variant = variant
+        self._sessions = list(initial_sessions) if initial_sessions is not None else []
+        self._needs_initial_scan = initial_sessions is None
+        self._update_hint = variant == "default" and registry_update_hint(self._sessions)
         self._frame = 0
+        self._text_dragging = False
+        self._body_update_pending = False
+
+    def _render_body(self) -> Group:
+        if self._variant == "split":
+            return render_split_sidebar(self._sessions)
+        return render_sidebar(self._sessions, self._frame, update_hint=self._update_hint)
 
     def compose(self) -> ComposeResult:
-        self._scan()
+        if self._needs_initial_scan:
+            self._scan()
+            self._needs_initial_scan = False
         with VerticalScroll():
-            yield _SidebarBody(render_sidebar(self._sessions, update_hint=self._update_hint),
-                               id="sidebar-body")
-        yield Footer()
+            yield _SidebarBody(self._render_body(), id="sidebar-body")
+        if self._variant == "default":
+            yield Footer()
 
     def on_mount(self) -> None:
         # chrome 配色映射到终端 ANSI 调色板；明暗跟随 tt 主题
@@ -121,12 +187,18 @@ class SidebarApp(App[None]):
         self.set_interval(SPINNER_SECONDS, self._tick_spinner)
 
     def _scan(self) -> None:
-        self._sessions = scan_sessions(agent_ids=self._agent_ids)
-        self._update_hint = registry_update_hint(self._sessions)
+        if self._variant == "split":
+            self._sessions = scan_sessions(agent_ids=self._agent_ids, max_prompts=SPLIT_MAX_PROMPTS)
+        else:
+            self._sessions = scan_sessions(agent_ids=self._agent_ids)
+        self._update_hint = self._variant == "default" and registry_update_hint(self._sessions)
 
     def _update_body(self) -> None:
-        self.query_one("#sidebar-body", Static).update(
-            render_sidebar(self._sessions, self._frame, update_hint=self._update_hint))
+        if self._text_dragging:
+            self._body_update_pending = True
+            return
+        self.query_one("#sidebar-body", Static).update(self._render_body())
+        self._body_update_pending = False
 
     def _refresh(self) -> None:
         self._scan()
@@ -137,6 +209,15 @@ class SidebarApp(App[None]):
         运行中星形轮转 + 头部三时区时钟的秒针都靠它走。"""
         self._frame += 1
         self._update_body()
+
+    def on_text_selected(self, event: events.TextSelected) -> None:
+        """松开鼠标即复制；拖拽期间跳过的最新一帧在复制后补上。"""
+        self._text_dragging = False
+        selected = self.screen.get_selected_text()
+        if selected:
+            self.copy_to_clipboard(selected)
+        if self._body_update_pending:
+            self._update_body()
 
     def action_jump_to(self, session_id: str) -> None:
         """点击会话头行触发：跳转焦点到该会话所在的终端窗格。
