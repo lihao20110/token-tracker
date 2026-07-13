@@ -14,6 +14,7 @@ _STRINGS = {
         "available_cmds": "可用命令: status, daily, weekly, monthly, sessions, sidebar, theme, setup, unsetup, --version",
         # --- sidebar（cli.py / ui/sidebar.py）---
         "sidebar_empty": "窗口期内没有活跃会话",
+        "sidebar_waiting_prompt": "等待当前会话的第一条提示词…",
         "sidebar_state_running": "运行中",
         "sidebar_state_attention": "待确认",
         "sidebar_state_waiting": "等输入",
@@ -105,6 +106,7 @@ _STRINGS = {
         "available_cmds": "Available commands: status, daily, weekly, monthly, sessions, sidebar, theme, setup, unsetup, --version",
         # --- sidebar（cli.py / ui/sidebar.py）---
         "sidebar_empty": "No active sessions in the window",
+        "sidebar_waiting_prompt": "Waiting for the first prompt in this session…",
         "sidebar_state_running": "running",
         "sidebar_state_attention": "needs you",
         "sidebar_state_waiting": "awaiting input",

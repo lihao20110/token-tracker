@@ -1,9 +1,11 @@
-"""tt sidebar 的 Textual 壳：备用屏常驻 + 滚动 + 鼠标选择自动复制 + 定时刷新。
+"""tt sidebar 的 Textual 壳：备用屏常驻 + 滚动 + 鼠标选择自动复制。
 
 数据复用 `sidebar.scan_sessions`；默认总览走 `ui.sidebar.render_sidebar`，自动 1/3 分屏走
 `render_split_sidebar`。Rich renderable 直接塞进 Static 整帧更新，滚动位置由
-VerticalScroll 容器保持（滚轮 / 方向键 / PgUp/PgDn）。
-Rich Group 由 _SidebarBody 补 Textual 选择偏移与文本提取；拖拽时暂停整帧更新、松手自动复制。
+VerticalScroll 容器保持（滚轮 / 方向键 / PgUp/PgDn）。普通总览按 5 秒扫描数据、0.5 秒
+刷新动画；自动分屏启动时只扫描一次历史，随后由 UserPromptSubmit 经 workspace FIFO 推送新提示词。
+Rich Group 由 _SidebarBody 补 Textual 选择偏移与文本提取；split 选区逐行排除树线、序号与
+悬挂缩进，只高亮并复制正文；拖拽时暂停整帧更新、松手自动复制。
 本地分屏运行器可传 `initial_sessions` 复用预扫描首帧，compose 不再重复冷扫描。
 配色继承终端：`ansi_color=True` + `ansi-dark/light` 主题让 app chrome（背景/滚动条/Footer）
 走终端 ANSI 调色板、不糊 Textual 自己的深色底；正文内容色仍由 tt 主题（`_S` 运行时代理）给，
@@ -12,7 +14,14 @@ Rich Group 由 _SidebarBody 补 Textual 选择偏移与文本提取；拖拽时�
 点击跳转依赖 statusline 携带 ITERM_SESSION_ID / TMUX_PANE 映射；tmux 与 iTerm2 已支持。
 """
 
+import os
+import select
 import subprocess
+import sys
+import threading
+from dataclasses import replace
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Literal
 
 from rich.console import Group
@@ -28,8 +37,9 @@ from textual.widgets import Footer, Static
 
 from .. import config
 from ..i18n import t
-from ..sidebar import LiveSession, registry_update_hint, scan_sessions, terminal_info
-from .sidebar import SPLIT_MAX_PROMPTS, render_sidebar, render_split_sidebar
+from ..sidebar import RUNNING, LiveSession, Prompt, registry_update_hint, scan_sessions, terminal_info
+from ..sidebar_events import MAX_EVENT_BYTES, PromptEvent, decode_prompt_event, prompt_fifo_path
+from .sidebar import SPLIT_PROMPT_LIMIT, render_sidebar, render_split_sidebar
 from .themes import get_theme
 
 REFRESH_SECONDS = 5.0
@@ -90,12 +100,55 @@ class _SidebarBody(Static):
     def link_style_hover(self) -> RichStyle:
         return RichStyle(color=get_theme(config.resolve_theme())["base"]["blue"], underline=True)
 
+    def _split_prefix_width(self) -> int:
+        """从已渲染首行读取 `├ 52. ` 的宽度；拖拽延迟刷新时不能改用新数据条数。"""
+        app = self.app
+        if not isinstance(app, SidebarApp) or app._variant != "split" or not self._render_cache.lines:
+            return 0
+        first = self._render_cache.lines[0].text
+        if not first.startswith(("├ ", "└ ")):
+            return 0
+        number_end = first.find(". ", 2)
+        if number_end < 0 or not first[2:number_end].strip().isdigit():
+            return 0
+        return number_end + 2
+
+    @staticmethod
+    def _split_body_span(line: str, span: tuple[int, int], prefix_width: int) -> tuple[int, int] | None:
+        """把 split 选区夹到正文列；纯树线间隔行不参与高亮与复制。"""
+        if line.rstrip() in ("", "│"):
+            return None
+        start, end = span
+        if end != -1 and end <= prefix_width:
+            return None
+        return max(start, prefix_width), end
+
+    def _split_selection(self, selection: Selection, lines: list[str], prefix_width: int) -> str:
+        """提取 split 正文，移除每个视觉行的树线、序号与悬挂缩进。"""
+        chunks: list[str] = []
+        for y, line in enumerate(lines):
+            span = selection.get_span(y)
+            if span is None:
+                continue
+            if line in ("", "│"):
+                chunks.append("")  # 条目间树线保留为空行，不进入剪贴板
+                continue
+            body_span = self._split_body_span(line, span, prefix_width)
+            if body_span is None:
+                continue
+            start, end = body_span
+            chunks.append(line[start:] if end == -1 else line[start:end])
+        return "\n".join(chunks).strip("\n")
+
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
-        """从当前已渲染行提取选区，保证复制结果与窄窗格折行完全一致。"""
+        """从已渲染行提取选区；split 去结构前缀，默认总览保持所见即所得。"""
         if self._dirty_regions:
             self._render_content()
-        text = "\n".join(line.text.rstrip() for line in self._render_cache.lines)
-        return selection.extract(text), "\n"
+        lines = [line.text.rstrip() for line in self._render_cache.lines]
+        prefix_width = self._split_prefix_width()
+        if prefix_width:
+            return self._split_selection(selection, lines, prefix_width), "\n"
+        return selection.extract("\n".join(lines)), "\n"
 
     def render_line(self, y: int) -> Strip:
         """给 Rich Group 补选择偏移，并在选区上叠加 Textual 高亮样式。
@@ -108,16 +161,20 @@ class _SidebarBody(Static):
         line = super().render_line(y)
         selection = self.text_selection
         if selection is not None and (span := selection.get_span(y)) is not None:
-            start, end = span
             line_text = Text()
             for segment in line:
                 if not segment.control:
                     line_text.append(segment.text, segment.style)
-            line_text.stylize(
-                self.screen.get_component_rich_style("screen--selection"),
-                start,
-                None if end == -1 else end,
-            )
+            prefix_width = self._split_prefix_width()
+            if prefix_width:
+                span = self._split_body_span(line_text.plain, span, prefix_width)
+            if span is not None:
+                start, end = span
+                line_text.stylize(
+                    self.screen.get_component_rich_style("screen--selection"),
+                    start,
+                    None if end == -1 else end,
+                )
             line = Strip(line_text.render(self.app.console), line.cell_length)
         offset_x = 0
         segments: list[Segment] = []
@@ -153,7 +210,9 @@ class SidebarApp(App[None]):
 
     def __init__(self, agent_ids: set[str] | None = None,
                  variant: Literal["default", "split"] = "default",
-                 initial_sessions: list[LiveSession] | None = None) -> None:
+                 initial_sessions: list[LiveSession] | None = None,
+                 prompt_session_id: str | None = None,
+                 prompt_channel_dir: str | None = None) -> None:
         # ansi_color=True：不把 ANSI 色转成 Textual 主题色，背景用终端自身默认色
         super().__init__(ansi_color=True)
         self._agent_ids = agent_ids
@@ -164,6 +223,12 @@ class SidebarApp(App[None]):
         self._frame = 0
         self._text_dragging = False
         self._body_update_pending = False
+        self._prompt_session_id = prompt_session_id
+        self._prompt_channel_dir = prompt_channel_dir
+        self._prompt_fifo_fd: int | None = None
+        self._prompt_fifo_path: str | None = None
+        self._prompt_fifo_inode: int | None = None
+        self._seen_prompt_turns: set[str] = set()
 
     def _render_body(self) -> Group:
         if self._variant == "split":
@@ -183,30 +248,154 @@ class SidebarApp(App[None]):
         # chrome 配色映射到终端 ANSI 调色板；明暗跟随 tt 主题
         self.theme = "ansi-light" if get_theme(config.resolve_theme()).get("is_light") else "ansi-dark"
         self.query_one(VerticalScroll).focus()  # 容器持焦点，方向键/PgUp/PgDn 直接滚
-        self.set_interval(REFRESH_SECONDS, self._refresh)
-        self.set_interval(SPINNER_SECONDS, self._tick_spinner)
+        if self._variant == "default":
+            self.set_interval(REFRESH_SECONDS, self._refresh)
+            self.set_interval(SPINNER_SECONDS, self._tick_spinner)
+        elif self._prompt_session_id:
+            self._start_prompt_listener()
 
-    def _scan(self) -> None:
+    def on_unmount(self) -> None:
+        self._stop_prompt_listener()
+
+    def _start_prompt_listener(self) -> None:
+        """split 专属：监听 UserPromptSubmit 事件，不启动任何定时扫描。"""
+        assert self._prompt_session_id is not None
+        path = prompt_fifo_path(self._prompt_session_id, self._prompt_channel_dir or ".")
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        os.mkfifo(path, 0o600)
+        fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+        self._prompt_fifo_fd = fd
+        self._prompt_fifo_path = path
+        self._prompt_fifo_inode = os.stat(path).st_ino
+        threading.Thread(
+            target=self._listen_prompt_events,
+            args=(fd, self._prompt_session_id),
+            name="tt-sidebar-prompts",
+            daemon=True,
+        ).start()
+
+    def _stop_prompt_listener(self) -> None:
+        fd = self._prompt_fifo_fd
+        self._prompt_fifo_fd = None
+        if fd is not None:
+            try:
+                os.write(fd, b"\0\0\0\0")  # 唤醒阻塞中的 select，让监听线程退出
+            except OSError:
+                pass
+            os.close(fd)
+        path = self._prompt_fifo_path
+        inode = self._prompt_fifo_inode
+        self._prompt_fifo_path = None
+        self._prompt_fifo_inode = None
+        if path and inode is not None:
+            try:
+                if os.stat(path).st_ino == inode:
+                    os.unlink(path)
+            except FileNotFoundError:
+                pass
+
+    def _listen_prompt_events(self, fd: int, session_id: str) -> None:
+        buffer = bytearray()
+        while self._prompt_fifo_fd == fd:
+            try:
+                readable, _, _ = select.select([fd], [], [])
+            except (OSError, ValueError):
+                return
+            if not readable:
+                continue
+            try:
+                buffer.extend(os.read(fd, 65536))
+            except (BlockingIOError, OSError):
+                continue
+            while len(buffer) >= 4:
+                size = int.from_bytes(buffer[:4], "big")
+                if size <= 0 or size > MAX_EVENT_BYTES:
+                    buffer.clear()
+                    break
+                if len(buffer) < size + 4:
+                    break
+                raw = bytes(buffer[4:size + 4])
+                del buffer[:size + 4]
+                event = decode_prompt_event(raw, session_id)
+                if event is not None:
+                    try:
+                        self.call_from_thread(self._accept_prompt_event, event)
+                    except RuntimeError:
+                        return
+
+    def _accept_prompt_event(self, event: PromptEvent) -> None:
+        if self._variant != "split" or event.session_id != self._prompt_session_id:
+            return
+        if event.turn_id and event.turn_id in self._seen_prompt_turns:
+            return
+        if event.turn_id:
+            self._seen_prompt_turns.add(event.turn_id)
+        now = datetime.now(UTC)
+        current = next((session for session in self._sessions if session.session_id == event.session_id), None)
+        prompt = Prompt(event.prompt, now)
+        if current is None:
+            current = LiveSession(
+                agent_id=event.agent_id,
+                session_id=event.session_id,
+                project=Path(event.cwd).name or "unknown",
+                last_activity=now,
+                state=RUNNING,
+                prompts=[prompt],
+                model=event.model,
+            )
+        else:
+            current = replace(
+                current,
+                last_activity=now,
+                state=RUNNING,
+                prompts=[*current.prompts, prompt],
+                model=event.model or current.model,
+            )
+        self._sessions = [current]
+        self._update_body()
+
+    def _scan(self) -> bool:
+        previous = self._sessions
+        previous_hint = self._update_hint
         if self._variant == "split":
-            self._sessions = scan_sessions(agent_ids=self._agent_ids, max_prompts=SPLIT_MAX_PROMPTS)
+            self._sessions = scan_sessions(agent_ids=self._agent_ids, max_prompts=SPLIT_PROMPT_LIMIT)
         else:
             self._sessions = scan_sessions(agent_ids=self._agent_ids)
         self._update_hint = self._variant == "default" and registry_update_hint(self._sessions)
+        return self._sessions != previous or self._update_hint != previous_hint
+
+    @staticmethod
+    def _restore_split_scroll(scroll: VerticalScroll, old_y: float, old_height: int) -> None:
+        """顶部插入新提示词后补偿新增行高，让历史阅读位置保持在同一内容。"""
+        height_delta = max(0, scroll.virtual_size.height - old_height)
+        scroll.scroll_to(y=old_y + height_delta, animate=False, force=True, immediate=True)
 
     def _update_body(self) -> None:
         if self._text_dragging:
             self._body_update_pending = True
             return
+        scroll = self.query_one(VerticalScroll)
+        old_y = scroll.scroll_y
+        old_height = scroll.virtual_size.height
         self.query_one("#sidebar-body", Static).update(self._render_body())
+        if self._variant == "split" and old_y > 0:
+            self.call_after_refresh(self._restore_split_scroll, scroll, old_y, old_height)
         self._body_update_pending = False
 
     def _refresh(self) -> None:
-        self._scan()
-        self._update_body()
+        if self._variant == "split":
+            return
+        if self._scan() or self._body_update_pending:
+            self._update_body()
 
     def _tick_spinner(self) -> None:
         """动画/时钟帧：0.5s 重绘一次（纯内存渲染，5s 的磁盘扫描节奏不变）——
         运行中星形轮转 + 头部三时区时钟的秒针都靠它走。"""
+        if self._variant == "split":
+            return
         self._frame += 1
         self._update_body()
 
@@ -216,6 +405,13 @@ class SidebarApp(App[None]):
         selected = self.screen.get_selected_text()
         if selected:
             self.copy_to_clipboard(selected)
+            if sys.platform == "darwin":
+                try:
+                    subprocess.run(
+                        ["/usr/bin/pbcopy"], input=selected, text=True, timeout=1, check=False,
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    pass  # OSC 52 仍作为兜底；自动复制保持静默
         if self._body_update_pending:
             self._update_body()
 

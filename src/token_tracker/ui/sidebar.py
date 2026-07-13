@@ -3,8 +3,8 @@
 默认总览每会话一块：状态点 + 项目名 + agent/模型 + 距上次活动；下面缩进列最近提示词
 （时间正序，最新一条常亮、更早的调暗）。头行单行截断不折行；提示词最多折
 `_PROMPT_MAX_LINES` 行、超出末行加省略号、正文右侧固定留 `_RIGHT_PAD` 格空白。
-自动 1/3 分屏走独立 `render_split_sidebar`：只列当前会话最近 10 条完整提示词
-（时间倒序、树状连接、最新一条全宽高亮），不影响默认总览。
+自动 1/3 分屏走独立 `render_split_sidebar`：列出当前会话全部完整提示词
+（时间倒序、稳定数字序号、树状连接、最新背景避开树线并右留一格），不影响默认总览。
 """
 
 from datetime import UTC, datetime
@@ -49,7 +49,9 @@ def _click_style(session_id: str) -> Style:
 _PROMPT_MAX_LINES = 2  # 每条提示词最多折 N 行，超出末行省略号
 _HINT_MAX_WRAP = 3     # 「下一步」每行原文最多折 N 行，超出末行省略号（主人定：先正常折行，3 行放不下再省略）
 _RIGHT_PAD = 2         # 正文右侧留白，折行不顶到窗格右缘
-SPLIT_MAX_PROMPTS = 10  # 自动 1/3 分屏默认显示当前会话最近 N 条完整提示词
+_SPLIT_RIGHT_PAD = 1   # 自动分屏右侧只留一格终端底色
+_SPLIT_TREE_PREFIX_WIDTH = 2  # `├ ` / `│ ` / `└ ` 不进入最新提示词背景
+SPLIT_PROMPT_LIMIT: int | None = None  # 自动 1/3 分屏保留当前会话全部提示词
 
 
 def _state_style(state: str) -> str:
@@ -157,7 +159,7 @@ class _WrappedLine:
 
 
 class _SplitPrompt:
-    """分屏提示词：保留原始段落、无限制折行，并用 first / cont 延续树状轨道。"""
+    """分屏提示词：完整折行；最新背景避开树前缀，并在右侧留一格。"""
 
     def __init__(self, text: str, first: Text, cont: Text, latest: bool) -> None:
         self.text = text
@@ -166,17 +168,18 @@ class _SplitPrompt:
         self.latest = latest
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        avail = max(1, options.max_width - self.first.cell_len - _RIGHT_PAD)
+        avail = max(1, options.max_width - self.first.cell_len - _SPLIT_RIGHT_PAD)
         background_style = f"on {get_active_theme()['base']['overlay0']}"
         first_visual_line = True
         for raw_line in self.text.splitlines() or [""]:
             for piece in _fold(raw_line, avail):
                 out = Text(no_wrap=True)
                 out.append_text(self.first if first_visual_line else self.cont)
-                out.append(piece, style="" if self.latest else _S.dim)
+                out.append(piece)
                 if self.latest:
-                    out.stylize(background_style)
-                    out.append(" " * max(0, options.max_width - out.cell_len), style=background_style)
+                    out.stylize(background_style, _SPLIT_TREE_PREFIX_WIDTH)
+                    background_width = max(0, options.max_width - _SPLIT_RIGHT_PAD)
+                    out.append(" " * max(0, background_width - out.cell_len), style=background_style)
                 yield out
                 first_visual_line = False
 
@@ -204,23 +207,26 @@ def _clock_lines() -> list[Text]:
 
 
 def render_split_sidebar(sessions: list[LiveSession]) -> Group:
-    """自动 1/3 分屏专属视图：只显示当前会话最近 10 条完整提示词。"""
+    """自动 1/3 分屏专属视图：显示当前会话全部提示词，并按时间正序稳定编号。"""
     lines: list[Text | _SplitPrompt] = []
-    prompts = sessions[0].prompts[-SPLIT_MAX_PROMPTS:] if sessions else []
+    prompts = sessions[0].prompts if sessions else []
     if not prompts:
-        lines.append(Text(t("sidebar_empty"), style=_S.dim))
+        lines.append(Text(t("sidebar_waiting_prompt"), style=_S.dim))
         return Group(*lines)
 
+    number_width = len(str(len(prompts)))
     for index, prompt in enumerate(reversed(prompts)):
         last = index == len(prompts) - 1
+        sequence = len(prompts) - index
+        number = f"{sequence:>{number_width}}. "
         lines.append(_SplitPrompt(
             prompt.text,
-            first=Text("└ " if last else "├ ", style=_S.dim),
-            cont=Text("  " if last else "│ ", style=_S.dim),
+            first=Text(("└ " if last else "├ ") + number),
+            cont=Text(("  " if last else "│ ") + " " * len(number)),
             latest=index == 0,
         ))
         if not last:
-            lines.append(Text("│", style=_S.dim))
+            lines.append(Text("│"))
     return Group(*lines)
 
 

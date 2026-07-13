@@ -116,13 +116,14 @@ class _CodexParseState:
     branch: str = ""
 
 
-# 按 (path, max_prompts) → (mtime, size, result) 缓存：相同条数且文件未变才复用。
-# 解析结果已经按 max_prompts 截断，参数必须进 key，避免先查 2 条后再查 5 条仍只返回 2 条。
-_parse_cache: dict[tuple[str, int], tuple[float, int, _Parsed]] = {}
+# 按 (path, max_prompts) → (mtime_ns, size, result) 缓存：相同条数且文件未变才复用。
+# 解析结果已经按 max_prompts 截断（None 表示保留全部），参数必须进 key，避免先查 2 条后
+# 再查 5 条或全部时仍只返回 2 条。
+_parse_cache: dict[tuple[str, int | None], tuple[int, int, _Parsed]] = {}
 
 
 def scan_sessions(hours_back: int = DEFAULT_HOURS_BACK,
-                  max_prompts: int = DEFAULT_MAX_PROMPTS,
+                  max_prompts: int | None = DEFAULT_MAX_PROMPTS,
                   agent_ids: set[str] | None = None,
                   max_sessions: int = DEFAULT_MAX_SESSIONS) -> list[LiveSession]:
     """窗口期内有动静的会话，按最近活动倒序、最多取前 max_sessions 个。
@@ -308,33 +309,38 @@ def _heartbeat_fresh(heartbeat: tuple[str, datetime] | None, session_id: str, no
             and (now - heartbeat[1]).total_seconds() < HEARTBEAT_FRESH_S)
 
 
-def _cache_get(path: Path, max_prompts: int) -> tuple[float, _Parsed | None]:
-    """返回 (mtime, 缓存命中的解析结果)；未命中返回 (mtime, None)。文件消失返回 (0, None)。"""
+def _cache_get(path: Path, max_prompts: int | None) -> tuple[float, tuple[int, int] | None, _Parsed | None]:
+    """返回 (mtime, 读取前文件指纹, 缓存结果)；文件消失时后两项均为 None。"""
     try:
         st = path.stat()
     except OSError:
-        return 0.0, None
+        return 0.0, None, None
+    stamp = (st.st_mtime_ns, st.st_size)
     hit = _parse_cache.get((str(path), max_prompts))
-    if hit and hit[0] == st.st_mtime and hit[1] == st.st_size:
-        return st.st_mtime, hit[2]
-    return st.st_mtime, None
+    if hit and hit[:2] == stamp:
+        return st.st_mtime, stamp, hit[2]
+    return st.st_mtime, stamp, None
 
 
-def _cache_put(path: Path, max_prompts: int, parsed: _Parsed) -> None:
+def _cache_put(path: Path, max_prompts: int | None, parsed: _Parsed,
+               expected_stamp: tuple[int, int]) -> None:
+    """文件在解析期间保持不变才缓存，避免 EOF 后追加的新事件被旧结果永久遮住。"""
     if len(_parse_cache) > _CACHE_MAX:
         _parse_cache.clear()
     try:
         st = path.stat()
     except OSError:
         return
-    _parse_cache[(str(path), max_prompts)] = (st.st_mtime, st.st_size, parsed)
+    stamp = (st.st_mtime_ns, st.st_size)
+    if stamp == expected_stamp:
+        _parse_cache[(str(path), max_prompts)] = (*stamp, parsed)
 
 
 # --- Claude Code ---
 
 def _scan_claude_sessions(cutoff: datetime, now: datetime,
                           heartbeat: tuple[str, datetime] | None,
-                          max_prompts: int,
+                          max_prompts: int | None,
                           dirs: list[str] | None = None,
                           term_map: dict[str, dict] | None = None,
                           live_sids: set[str] | None = None) -> list[LiveSession]:
@@ -348,7 +354,7 @@ def _scan_claude_sessions(cutoff: datetime, now: datetime,
         if not base.is_dir():
             continue
         for path in base.rglob("*.jsonl"):
-            mtime, parsed = _cache_get(path, max_prompts)
+            mtime, stamp, parsed = _cache_get(path, max_prompts)
             if mtime <= 0:
                 continue
             mtime_dt = datetime.fromtimestamp(mtime, UTC)
@@ -359,7 +365,8 @@ def _scan_claude_sessions(cutoff: datetime, now: datetime,
                 parsed = _parse_claude(path, fallback, max_prompts)
                 if parsed is None:
                     continue
-                _cache_put(path, max_prompts, parsed)
+                if stamp is not None:
+                    _cache_put(path, max_prompts, parsed, stamp)
             if not parsed.prompts or parsed.session_id in seen:
                 continue
             if live_sids is not None and parsed.session_id not in live_sids:
@@ -385,7 +392,7 @@ def _scan_claude_sessions(cutoff: datetime, now: datetime,
     return sessions
 
 
-def _parse_claude(path: Path, fallback_project: str, max_prompts: int) -> _Parsed | None:
+def _parse_claude(path: Path, fallback_project: str, max_prompts: int | None) -> _Parsed | None:
     state = _ClaudeParseState(session_id=path.stem, project=fallback_project)
     for data in iter_jsonl_dicts(path):
         if data.get("isSidechain"):  # 子代理 sidechain 的消息不是主人敲的提示词
@@ -399,7 +406,8 @@ def _parse_claude(path: Path, fallback_project: str, max_prompts: int) -> _Parse
     if not state.prompts:
         return None
     # 「下一步」优先级链：结构化提问（待回答，零猜测）> 句子打分精简 > 末行兜底
-    return _Parsed(state.session_id, state.project, state.prompts[-max_prompts:], state.pending_tool, state.model,
+    prompts = state.prompts if max_prompts is None else state.prompts[-max_prompts:]
+    return _Parsed(state.session_id, state.project, prompts, state.pending_tool, state.model,
                    branch=state.branch, next_hint=state.pending_question or _hint_text(state.last_reply),
                    last_event=state.last_event)
 
@@ -487,7 +495,7 @@ def _claude_prompt_text(content: object) -> str | None:
 
 def _scan_codex_sessions(cutoff: datetime, now: datetime,
                          heartbeat: tuple[str, datetime] | None,
-                         max_prompts: int,
+                         max_prompts: int | None,
                          sessions_dir: str | None = None,
                          term_map: dict[str, dict] | None = None) -> list[LiveSession]:
     term_map = term_map or {}  # Codex Stop hook ≥1.2 采集；未启用/尚未跑过一帧时为空、点击优雅降级
@@ -498,7 +506,7 @@ def _scan_codex_sessions(cutoff: datetime, now: datetime,
     sessions: list[LiveSession] = []
     seen: set[str] = set()
     for path in base.rglob("*.jsonl"):
-        mtime, parsed = _cache_get(path, max_prompts)
+        mtime, stamp, parsed = _cache_get(path, max_prompts)
         if mtime <= 0:
             continue
         mtime_dt = datetime.fromtimestamp(mtime, UTC)
@@ -508,7 +516,8 @@ def _scan_codex_sessions(cutoff: datetime, now: datetime,
             parsed = _parse_codex(path, max_prompts)
             if parsed is None:
                 continue
-            _cache_put(path, max_prompts, parsed)
+            if stamp is not None:
+                _cache_put(path, max_prompts, parsed, stamp)
         if not parsed.prompts or parsed.session_id in seen:
             continue
         last_activity = parsed.last_event or mtime_dt
@@ -531,7 +540,7 @@ def _scan_codex_sessions(cutoff: datetime, now: datetime,
     return sessions
 
 
-def _parse_codex(path: Path, max_prompts: int) -> _Parsed | None:
+def _parse_codex(path: Path, max_prompts: int | None) -> _Parsed | None:
     state = _CodexParseState()
     for data in iter_jsonl_dicts(path):
         payload = data.get("payload")
@@ -547,7 +556,8 @@ def _parse_codex(path: Path, max_prompts: int) -> _Parsed | None:
             _consume_codex_event(payload, ts, state)
     if not state.prompts:
         return None
-    return _Parsed(state.session_id or path.stem, state.project, state.prompts[-max_prompts:], state.pending_task,
+    prompts = state.prompts if max_prompts is None else state.prompts[-max_prompts:]
+    return _Parsed(state.session_id or path.stem, state.project, prompts, state.pending_task,
                    branch=state.branch, next_hint=_hint_text(state.last_reply), last_event=state.last_event)
 
 

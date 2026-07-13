@@ -88,6 +88,12 @@ def test_claude_max_prompts_keeps_latest(tmp_path):
     assert [p.text for p in parsed.prompts] == ["提示词2", "提示词3", "提示词4"]
 
 
+def test_claude_none_max_prompts_keeps_all(tmp_path):
+    rows = [_u(f"提示词{i}") for i in range(12)]
+    parsed = _parse_claude(_write_jsonl(tmp_path / "s.jsonl", rows), "p", None)
+    assert [p.text for p in parsed.prompts] == [f"提示词{i}" for i in range(12)]
+
+
 def test_claude_pending_tool_tracking(tmp_path):
     tool_use = [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]
     tool_result = [{"type": "tool_result", "tool_use_id": "t1", "content": "done"}]
@@ -183,6 +189,20 @@ def test_codex_parse(tmp_path):
     assert parsed.pending_tool is False
 
 
+def test_codex_none_max_prompts_keeps_all(tmp_path):
+    rows = [
+        {"timestamp": _iso(30), "type": "session_meta",
+         "payload": {"id": "cx-all", "cwd": "/tmp/project"}},
+        *[
+            {"timestamp": _iso(20 - i), "type": "event_msg",
+             "payload": {"type": "user_message", "message": f"提示词{i}"}}
+            for i in range(12)
+        ],
+    ]
+    parsed = _parse_codex(_write_jsonl(tmp_path / "rollout.jsonl", rows), None)
+    assert [p.text for p in parsed.prompts] == [f"提示词{i}" for i in range(12)]
+
+
 # --- 扫描：窗口过滤 + 排序 + 缓存 ---
 
 def _make_claude_base(tmp_path: Path) -> Path:
@@ -228,6 +248,31 @@ def test_scan_claude_uses_cache_for_unchanged_file(tmp_path, monkeypatch):
     monkeypatch.setattr(sidebar, "_parse_claude",
                         lambda *a, **k: pytest.fail("cache miss: reparsed unchanged file"))
     assert len(_scan_claude_sessions(cutoff, now, None, 3, dirs=[str(base)])) == 1
+
+
+def test_scan_claude_does_not_cache_result_if_file_changes_during_parse(tmp_path, monkeypatch):
+    base = _make_claude_base(tmp_path)
+    path = _write_jsonl(base / "-Users-x-project-alpha" / "s.jsonl", [_u("第一条")])
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(hours=12)
+    parse_claude = sidebar._parse_claude
+    appended = False
+
+    def parse_then_append(*args, **kwargs):
+        nonlocal appended
+        parsed = parse_claude(*args, **kwargs)
+        if not appended:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(_u("解析期间追加"), ensure_ascii=False) + "\n")
+            appended = True
+        return parsed
+
+    monkeypatch.setattr(sidebar, "_parse_claude", parse_then_append)
+    first = _scan_claude_sessions(cutoff, now, None, None, dirs=[str(base)])
+    second = _scan_claude_sessions(cutoff, now, None, None, dirs=[str(base)])
+
+    assert [p.text for p in first[0].prompts] == ["第一条"]
+    assert [p.text for p in second[0].prompts] == ["第一条", "解析期间追加"]
 
 
 def test_scan_claude_cache_isolated_by_max_prompts(tmp_path):
@@ -656,7 +701,7 @@ def test_render_next_hint_and_spinner_frame():
     assert "✢ proj" in out and "✳ proj" in out  # 帧不同 → 会话头星形符号轮转（标题自带 ✳，不数全局）
 
 
-def test_split_sidebar_only_shows_latest_ten_prompts_newest_first_as_tree():
+def test_split_sidebar_shows_all_prompts_newest_first_as_tree():
     now = datetime.now(UTC)
     prompts = [Prompt(f"[P{i:02d}]", now + timedelta(seconds=i)) for i in range(12)]
     sessions = [LiveSession(agent_id="claude-code", session_id="s1", project="hidden-project",
@@ -667,18 +712,20 @@ def test_split_sidebar_only_shows_latest_ten_prompts_newest_first_as_tree():
     lines = console.export_text().splitlines()
     output = "\n".join(lines)
 
-    assert lines[0].startswith("├ [P11]")  # 第一行直接是最新提示词，无标题 / 时钟
+    assert lines[0].startswith("├ 12. [P11]")  # 最新提示词编号最大，无标题 / 时钟
     assert "hidden-project" not in output
     assert "hidden-branch" not in output
     assert "hidden-next-step" not in output
     assert "tt sidebar" not in output
-    assert "[P00]" not in output and "[P01]" not in output
+    assert "[P00]" in output and "[P01]" in output
     positions = [next(i for i, line in enumerate(lines) if token in line)
-                 for token in (f"[P{i:02d}]" for i in range(11, 1, -1))]
+                 for token in (f"[P{i:02d}]" for i in range(11, -1, -1))]
     assert positions == sorted(positions)
     assert all(second - first == 2 for first, second in pairwise(positions))
     assert all(lines[first + 1] == "│" for first in positions[:-1])
-    assert lines[positions[-1]].startswith("└ [P02]")
+    for sequence, position in zip(range(12, 0, -1), positions, strict=True):
+        marker = "└" if sequence == 1 else "├"
+        assert lines[position].startswith(f"{marker} {sequence:>2}. [P{sequence - 1:02d}]")
 
     default_console = Console(record=True, width=40)
     default_console.print(render_sidebar(sessions))
@@ -686,8 +733,17 @@ def test_split_sidebar_only_shows_latest_ten_prompts_newest_first_as_tree():
     assert "hidden-project" in default_output and "hidden-next-step" in default_output
 
 
-def test_split_sidebar_shows_complete_prompt_and_highlights_latest_full_width():
+def test_split_sidebar_empty_waits_for_first_prompt():
+    console = Console(record=True, width=40)
+    console.print(render_split_sidebar([]))
+
+    assert console.export_text().strip() == "等待当前会话的第一条提示词…"
+
+
+def test_split_sidebar_latest_highlight_excludes_tree_and_leaves_one_right_cell():
     from rich.cells import cell_len
+
+    from token_tracker.ui.theme import get_active_theme
 
     now = datetime.now(UTC)
     full_text = "完整内容" * 100 + "\n第二段"
@@ -705,12 +761,23 @@ def test_split_sidebar_shows_complete_prompt_and_highlights_latest_full_width():
     latest_lines = lines[latest_start:latest_end]
 
     assert all(segment.style is None or segment.style.bgcolor is None for segment in old_line)
+    assert all(segment.style is None or not segment.style.dim
+               for line in lines for segment in line if segment.text)
+    expected_background = get_active_theme()["base"]["overlay0"]
     for line in latest_lines:
-        assert cell_len("".join(segment.text for segment in line)) == 30
+        assert cell_len("".join(segment.text for segment in line)) == 29
+        assert line[0].text in {"├ ", "│ ", "└ "}
+        assert line[0].style is None or line[0].style.bgcolor is None
         assert all(segment.style is not None and segment.style.bgcolor is not None
-                   for segment in line if segment.text)
+                   for segment in line[1:] if segment.text)
+        assert {
+            segment.style.bgcolor.triplet.hex
+            for segment in line[1:]
+            if segment.text and segment.style and segment.style.bgcolor and segment.style.bgcolor.triplet
+        } == {expected_background}
+    prefix_width = len("├ 2. ")
     rendered_latest = "".join(
-        "".join(segment.text for segment in line)[2:].rstrip()
+        "".join(segment.text for segment in line)[prefix_width:].rstrip()
         for line in latest_lines
     )
     assert rendered_latest.count("完整内容") == 100
