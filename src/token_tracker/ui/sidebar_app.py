@@ -3,7 +3,8 @@
 数据复用 `sidebar.scan_sessions`；默认总览走 `ui.sidebar.render_sidebar`，自动 1/3 分屏走
 `render_split_sidebar`。Rich renderable 直接塞进 Static 整帧更新，滚动位置由
 VerticalScroll 容器保持（滚轮 / 方向键 / PgUp/PgDn）。普通总览按 5 秒扫描数据、0.5 秒
-刷新动画；自动分屏启动时只扫描一次历史，随后由 UserPromptSubmit 经 workspace FIFO 推送新提示词。
+刷新动画；自动分屏启动时只扫描一次历史，随后优先接 UserPromptSubmit FIFO，并增量 tail
+当前会话 transcript 兜底，兼容 hook 未信任或会话早于 hook 创建的情况。
 Rich Group 由 _SidebarBody 补 Textual 选择偏移与文本提取；split 选区逐行排除树线、序号与
 悬挂缩进，只高亮并复制正文；拖拽时暂停整帧更新、松手自动复制。
 本地分屏运行器可传 `initial_sessions` 复用预扫描首帧，compose 不再重复冷扫描。
@@ -37,13 +38,25 @@ from textual.widgets import Footer, Static
 
 from .. import config
 from ..i18n import t
-from ..sidebar import RUNNING, LiveSession, Prompt, registry_update_hint, scan_sessions, terminal_info
+from ..sidebar import (
+    RUNNING,
+    LiveSession,
+    Prompt,
+    find_session_transcript,
+    registry_update_hint,
+    scan_sessions,
+    terminal_info,
+    transcript_line_prompt_event,
+    transcript_line_turn_id,
+)
 from ..sidebar_events import MAX_EVENT_BYTES, PromptEvent, decode_prompt_event, prompt_fifo_path
 from .sidebar import SPLIT_PROMPT_LIMIT, render_sidebar, render_split_sidebar
 from .themes import get_theme
 
 REFRESH_SECONDS = 5.0
 SPINNER_SECONDS = 0.5  # 动画/时钟帧间隔——只用缓存会话重绘，不触发磁盘扫描
+TRANSCRIPT_WATCH_SECONDS = 0.2  # 只 stat 当前会话文件；增长时才读取追加 JSONL
+TRANSCRIPT_RETRY_SECONDS = 0.5  # 新会话 transcript 尚未创建时的定位重试间隔
 _TARGET_GONE_MARKER = "tt_jump_target_gone"  # AppleScript 未匹配到目标窗格的信号（tab 已关闭）
 
 
@@ -212,7 +225,9 @@ class SidebarApp(App[None]):
                  variant: Literal["default", "split"] = "default",
                  initial_sessions: list[LiveSession] | None = None,
                  prompt_session_id: str | None = None,
-                 prompt_channel_dir: str | None = None) -> None:
+                 prompt_channel_dir: str | None = None,
+                 prompt_transcript_path: str | None = None,
+                 prompt_agent_id: str | None = None) -> None:
         # ansi_color=True：不把 ANSI 色转成 Textual 主题色，背景用终端自身默认色
         super().__init__(ansi_color=True)
         self._agent_ids = agent_ids
@@ -225,10 +240,19 @@ class SidebarApp(App[None]):
         self._body_update_pending = False
         self._prompt_session_id = prompt_session_id
         self._prompt_channel_dir = prompt_channel_dir
+        self._prompt_transcript_path = prompt_transcript_path
+        self._prompt_agent_id = prompt_agent_id
         self._prompt_fifo_fd: int | None = None
         self._prompt_fifo_path: str | None = None
         self._prompt_fifo_inode: int | None = None
-        self._seen_prompt_turns: set[str] = set()
+        self._seen_prompt_turns: set[str] = {
+            prompt.event_id
+            for session in self._sessions
+            for prompt in session.prompts
+            if prompt.event_id
+        }
+        self._prompt_watch_stop = threading.Event()
+        self._prompt_watch_thread: threading.Thread | None = None
 
     def _render_body(self) -> Group:
         if self._variant == "split":
@@ -258,8 +282,9 @@ class SidebarApp(App[None]):
         self._stop_prompt_listener()
 
     def _start_prompt_listener(self) -> None:
-        """split 专属：监听 UserPromptSubmit 事件，不启动任何定时扫描。"""
+        """split 专属：FIFO 为快路径，当前 transcript 增量 tail 为免信任兜底。"""
         assert self._prompt_session_id is not None
+        self._prompt_watch_stop.clear()
         path = prompt_fifo_path(self._prompt_session_id, self._prompt_channel_dir or ".")
         try:
             os.unlink(path)
@@ -276,8 +301,16 @@ class SidebarApp(App[None]):
             name="tt-sidebar-prompts",
             daemon=True,
         ).start()
+        self._prompt_watch_thread = threading.Thread(
+            target=self._watch_prompt_transcript,
+            args=(self._prompt_session_id,),
+            name="tt-sidebar-transcript",
+            daemon=True,
+        )
+        self._prompt_watch_thread.start()
 
     def _stop_prompt_listener(self) -> None:
+        self._prompt_watch_stop.set()
         fd = self._prompt_fifo_fd
         self._prompt_fifo_fd = None
         if fd is not None:
@@ -296,6 +329,10 @@ class SidebarApp(App[None]):
                     os.unlink(path)
             except FileNotFoundError:
                 pass
+        watch_thread = self._prompt_watch_thread
+        self._prompt_watch_thread = None
+        if watch_thread is not None and watch_thread is not threading.current_thread():
+            watch_thread.join(timeout=TRANSCRIPT_RETRY_SECONDS + 0.1)
 
     def _listen_prompt_events(self, fd: int, session_id: str) -> None:
         buffer = bytearray()
@@ -326,6 +363,119 @@ class SidebarApp(App[None]):
                     except RuntimeError:
                         return
 
+    def _watch_prompt_transcript(self, session_id: str) -> None:
+        """只 stat / tail 当前会话文件；发现新提示词后才触发一次权威扫描。
+
+        旧 Codex 会话可能没有加载后来新增的 hook，且非 managed hook 在信任前必定
+        被跳过。增量 tail 因此是永久 safety net，但不会恢复全目录定时扫描。
+        """
+        source: tuple[str, Path] | None = None
+        inode: int | None = None
+        offset = 0
+        partial = b""
+        pending_turn_id = ""
+
+        while not self._prompt_watch_stop.is_set():
+            if source is None:
+                hinted_path = Path(self._prompt_transcript_path) if self._prompt_transcript_path else None
+                if hinted_path is not None and hinted_path.is_file() and self._prompt_agent_id:
+                    source = self._prompt_agent_id, hinted_path
+                else:
+                    source = find_session_transcript(session_id)
+                if source is None:
+                    self._prompt_watch_stop.wait(TRANSCRIPT_RETRY_SECONDS)
+                    continue
+                try:
+                    stat = source[1].stat()
+                except OSError:
+                    source = None
+                    continue
+                inode = stat.st_ino
+                offset = stat.st_size  # 启动前历史已由 initial scan 注入，只 tail 后续追加
+                partial = b""
+                pending_turn_id = ""
+                # 覆盖 initial scan 与 watcher 绑定之间的窗口；缓存命中时只是一次轻量对账。
+                try:
+                    self.call_from_thread(self._refresh_split_from_transcript, source[0], ())
+                except RuntimeError:
+                    return
+
+            if self._prompt_watch_stop.wait(TRANSCRIPT_WATCH_SECONDS):
+                return
+            agent_id, path = source
+            try:
+                stat = path.stat()
+            except OSError:
+                source = None
+                continue
+            if inode != stat.st_ino or stat.st_size < offset:
+                # rollout rename / compact：从新文件开头重建一次，完整 scanner 会负责去重。
+                inode = stat.st_ino
+                offset = 0
+                partial = b""
+                pending_turn_id = ""
+            if stat.st_size == offset:
+                continue
+            try:
+                with path.open("rb") as transcript:
+                    transcript.seek(offset)
+                    chunk = transcript.read()
+                    offset = transcript.tell()
+            except OSError:
+                source = None
+                continue
+            if not chunk:
+                continue
+
+            rows = (partial + chunk).split(b"\n")
+            partial = rows.pop()
+            prompt_found = False
+            prompt_event_ids: set[str] = set()
+            for row in rows:
+                if not row:
+                    continue
+                pending_turn_id = transcript_line_turn_id(row, agent_id) or pending_turn_id
+                is_prompt, prompt_event_id = transcript_line_prompt_event(row, agent_id, session_id)
+                if is_prompt:
+                    prompt_found = True
+                    event_id = prompt_event_id or pending_turn_id
+                    if event_id:
+                        prompt_event_ids.add(event_id)
+                    pending_turn_id = ""
+            if prompt_found:
+                try:
+                    self.call_from_thread(
+                        self._refresh_split_from_transcript,
+                        agent_id,
+                        tuple(prompt_event_ids),
+                    )
+                except RuntimeError:
+                    return
+
+    def _refresh_split_from_transcript(self, agent_id: str, event_ids: tuple[str, ...] = ()) -> None:
+        """transcript 命中后读取一次完整快照；与 FIFO 双通道天然收敛为单份历史。"""
+        if self._variant != "split" or not self._prompt_session_id:
+            return
+        sessions = scan_sessions(
+            agent_ids={agent_id},
+            max_prompts=SPLIT_PROMPT_LIMIT,
+            max_sessions=1000,
+        )
+        current = next(
+            (session for session in sessions if session.session_id == self._prompt_session_id),
+            None,
+        )
+        if current is None:
+            return
+        self._seen_prompt_turns.update(event_ids)
+        self._seen_prompt_turns.update(
+            prompt.event_id for prompt in current.prompts if prompt.event_id
+        )
+        if self._sessions == [current]:
+            return
+        self._sessions = [current]
+        self._update_body()
+
     def _accept_prompt_event(self, event: PromptEvent) -> None:
         if self._variant != "split" or event.session_id != self._prompt_session_id:
             return
@@ -335,7 +485,7 @@ class SidebarApp(App[None]):
             self._seen_prompt_turns.add(event.turn_id)
         now = datetime.now(UTC)
         current = next((session for session in self._sessions if session.session_id == event.session_id), None)
-        prompt = Prompt(event.prompt, now)
+        prompt = Prompt(event.prompt, now, event_id=event.turn_id)
         if current is None:
             current = LiveSession(
                 agent_id=event.agent_id,
@@ -361,7 +511,17 @@ class SidebarApp(App[None]):
         previous = self._sessions
         previous_hint = self._update_hint
         if self._variant == "split":
-            self._sessions = scan_sessions(agent_ids=self._agent_ids, max_prompts=SPLIT_PROMPT_LIMIT)
+            sessions = scan_sessions(
+                agent_ids=self._agent_ids,
+                max_prompts=SPLIT_PROMPT_LIMIT,
+                max_sessions=1000,
+            )
+            if self._prompt_session_id:
+                sessions = [
+                    session for session in sessions
+                    if session.session_id == self._prompt_session_id
+                ]
+            self._sessions = sessions
         else:
             self._sessions = scan_sessions(agent_ids=self._agent_ids)
         self._update_hint = self._variant == "default" and registry_update_hint(self._sessions)

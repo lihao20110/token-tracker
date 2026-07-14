@@ -61,7 +61,8 @@ def prompt_event_from_hook(data: Any, agent_id: str) -> PromptEvent | None:
         agent_id=agent_id,
         cwd=_string(data, "cwd"),
         model=_string(data, "model"),
-        turn_id=_string(data, "turn_id"),
+        # Codex 使用 turn_id；Claude Code 的同类稳定标识叫 prompt_id。
+        turn_id=_string(data, "turn_id") or _string(data, "prompt_id"),
     )
 
 

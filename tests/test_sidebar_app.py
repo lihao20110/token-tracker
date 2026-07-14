@@ -4,6 +4,7 @@ agent_ids=set() 让 scan_sessions 跳过两个 agent 的真实数据扫描，
 app 渲染空态——测试不依赖本机 ~/.claude / ~/.codex 内容。
 """
 
+import json
 import os
 from uuid import uuid4
 
@@ -59,6 +60,12 @@ def test_prompt_event_from_hook_validates_and_keeps_agent_filtering():
     )
     assert prompt_event_from_hook({**data, "prompt": "/tt-sidebar"}, "claude-code") is None
     assert prompt_event_from_hook({**data, "session_id": ""}, "codex") is None
+    claude_event = prompt_event_from_hook({
+        **data,
+        "turn_id": "",
+        "prompt_id": "prompt-cc-1",
+    }, "claude-code")
+    assert claude_event is not None and claude_event.turn_id == "prompt-cc-1"
 
 
 async def test_sidebar_app_boots_renders_and_quits(monkeypatch):
@@ -228,6 +235,177 @@ async def test_split_fifo_event_updates_without_polling(monkeypatch):
         await pilot.pause(0.1)
         assert [prompt.text for prompt in app._sessions[0].prompts] == ["hook 立即推送"]
     assert not os.path.exists(path)
+
+
+async def test_split_transcript_tail_refreshes_when_codex_hook_was_not_loaded(tmp_path, monkeypatch):
+    from datetime import UTC, datetime
+
+    from token_tracker.sidebar import LiveSession, Prompt
+    from token_tracker.ui import sidebar_app as app_module
+
+    session_id = "old-codex-session"
+    rollout = tmp_path / "rollout.jsonl"
+    rollout.write_text('{"type":"session_meta","payload":{}}\n', encoding="utf-8")
+    now = datetime.now(UTC)
+    initial = [LiveSession(
+        agent_id="codex",
+        session_id=session_id,
+        project="proj",
+        last_activity=now,
+        state="waiting",
+        prompts=[Prompt("旧提示词", now)],
+    )]
+    refreshed = [LiveSession(
+        agent_id="codex",
+        session_id=session_id,
+        project="proj",
+        last_activity=now,
+        state="running",
+        prompts=[Prompt("旧提示词", now), Prompt("tail 立即补上", now)],
+    )]
+    distractor = LiveSession(
+        agent_id="codex",
+        session_id="other-session",
+        project="other",
+        last_activity=now,
+        state="running",
+        prompts=[Prompt("其他会话", now)],
+    )
+    scans: list[dict] = []
+    monkeypatch.setattr(
+        app_module,
+        "find_session_transcript",
+        lambda _sid: (_ for _ in ()).throw(AssertionError("精确 transcript hint 不应回退目录查找")),
+    )
+    def fake_scan(**kwargs):
+        scans.append(kwargs)
+        return [distractor, *refreshed] if "tail 立即补上" in rollout.read_text(encoding="utf-8") else initial
+
+    monkeypatch.setattr(app_module, "scan_sessions", fake_scan)
+    app = SidebarApp(
+        variant="split",
+        initial_sessions=initial,
+        prompt_session_id=session_id,
+        prompt_channel_dir=str(tmp_path),
+        prompt_transcript_path=str(rollout),
+        prompt_agent_id="codex",
+    )
+    intervals: list[float] = []
+    monkeypatch.setattr(app, "set_interval", lambda seconds, *args, **kwargs: intervals.append(seconds))
+
+    async with app.run_test(size=(50, 10)) as pilot:
+        await pilot.pause(0.25)  # watcher 已记录启动 offset
+        with rollout.open("a", encoding="utf-8") as transcript:
+            for row in (
+                {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn-tail"}},
+                {"type": "event_msg", "payload": {"type": "user_message", "message": "tail 立即补上"}},
+            ):
+                transcript.write(json.dumps(row, ensure_ascii=False) + "\n")
+        await pilot.pause(0.5)
+
+        assert intervals == []  # 没恢复 Textual 全量轮询 timer
+        assert len(scans) == 2  # 首次绑定对账 + 追加提示词后的权威刷新
+        assert all(scan["agent_ids"] == {"codex"} for scan in scans)
+        assert all(scan["max_sessions"] == 1000 for scan in scans)
+        assert [prompt.text for prompt in app._sessions[0].prompts] == ["旧提示词", "tail 立即补上"]
+
+        # transcript 先到、同 turn 的 FIFO 后到，也不能把同一提示词乐观追加第二次。
+        app._accept_prompt_event(PromptEvent(
+            session_id,
+            "tail 立即补上",
+            "codex",
+            turn_id="turn-tail",
+        ))
+        assert [prompt.text for prompt in app._sessions[0].prompts] == ["旧提示词", "tail 立即补上"]
+
+        body = app.query_one("#sidebar-body", Static)
+        body._render_content()
+        assert "tail 立即补上" in "\n".join(line.text for line in body._render_cache.lines)
+
+
+async def test_split_transcript_initial_reconcile_closes_watcher_bind_race(tmp_path, monkeypatch):
+    """提示词先于 watcher 绑定写入时，也不能因首次 offset=EOF 永久漏掉。"""
+    from datetime import UTC, datetime
+
+    from token_tracker.sidebar import LiveSession, Prompt
+    from token_tracker.ui import sidebar_app as app_module
+
+    session_id = "bind-race"
+    rollout = tmp_path / "rollout.jsonl"
+    rollout.write_text(
+        json.dumps({
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "绑定前已写入"},
+        }, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    now = datetime.now(UTC)
+    refreshed = [LiveSession(
+        agent_id="codex",
+        session_id=session_id,
+        project="proj",
+        last_activity=now,
+        state="running",
+        prompts=[Prompt("绑定前已写入", now)],
+    )]
+    monkeypatch.setattr(
+        app_module,
+        "find_session_transcript",
+        lambda sid: ("codex", rollout) if sid == session_id else None,
+    )
+    monkeypatch.setattr(app_module, "scan_sessions", lambda **kwargs: refreshed)
+    app = SidebarApp(
+        variant="split",
+        initial_sessions=[],
+        prompt_session_id=session_id,
+        prompt_channel_dir=str(tmp_path),
+    )
+
+    async with app.run_test(size=(50, 10)) as pilot:
+        await pilot.pause(0.3)
+        assert [prompt.text for prompt in app._sessions[0].prompts] == ["绑定前已写入"]
+
+
+async def test_split_fifo_first_then_transcript_snapshot_converges_without_duplicate(tmp_path, monkeypatch):
+    from datetime import UTC, datetime
+
+    from token_tracker.sidebar import LiveSession, Prompt
+    from token_tracker.ui import sidebar_app as app_module
+
+    session_id = "fifo-first"
+    now = datetime.now(UTC)
+    initial = [LiveSession(
+        agent_id="codex",
+        session_id=session_id,
+        project="proj",
+        last_activity=now,
+        state="waiting",
+        prompts=[Prompt("旧提示词", now)],
+    )]
+    authoritative = [LiveSession(
+        agent_id="codex",
+        session_id=session_id,
+        project="proj",
+        last_activity=now,
+        state="running",
+        prompts=[Prompt("旧提示词", now), Prompt("同一条", now)],
+    )]
+    monkeypatch.setattr(app_module, "find_session_transcript", lambda _sid: None)
+    monkeypatch.setattr(app_module, "scan_sessions", lambda **kwargs: authoritative)
+    app = SidebarApp(
+        variant="split",
+        initial_sessions=initial,
+        prompt_session_id=session_id,
+        prompt_channel_dir=str(tmp_path),
+    )
+
+    async with app.run_test(size=(50, 10)) as pilot:
+        await pilot.pause()
+        app._accept_prompt_event(PromptEvent(session_id, "同一条", "codex", turn_id="turn-same"))
+        app._refresh_split_from_transcript("codex", ("turn-same",))
+        await pilot.pause()
+
+        assert [prompt.text for prompt in app._sessions[0].prompts] == ["旧提示词", "同一条"]
 
 
 async def test_split_multiline_selection_excludes_tree_number_and_hanging_indent(monkeypatch):
