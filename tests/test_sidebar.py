@@ -1,6 +1,5 @@
 import json
 import os
-import sqlite3
 import subprocess
 import time
 from datetime import UTC, datetime, timedelta
@@ -80,7 +79,6 @@ def test_claude_prompt_extraction_filters_noise(tmp_path):
     assert [p.text for p in parsed.prompts] == ["真提示词一", "带图提示词", "混合消息里的真提示词"]
     assert parsed.session_id == "s-abc"
     assert parsed.prompts[0].timestamp is not None
-    assert parsed.prompts[0].event_id == "prompt-cc-1"
     assert parsed.branch == "feature/x"  # transcript 自带 gitBranch，白拿
 
 
@@ -94,54 +92,6 @@ def test_claude_none_max_prompts_keeps_all(tmp_path):
     rows = [_u(f"提示词{i}") for i in range(12)]
     parsed = _parse_claude(_write_jsonl(tmp_path / "s.jsonl", rows), "p", None)
     assert [p.text for p in parsed.prompts] == [f"提示词{i}" for i in range(12)]
-
-
-def test_find_session_transcript_prefers_codex_state_db(tmp_path, monkeypatch):
-    rollout = _write_jsonl(tmp_path / "rollout.jsonl", [])
-    state_db = tmp_path / "state.sqlite"
-    conn = sqlite3.connect(state_db)
-    conn.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT)")
-    conn.execute("INSERT INTO threads VALUES (?, ?)", ("session-1", str(rollout)))
-    conn.commit()
-    conn.close()
-
-    monkeypatch.setattr(sidebar.codex_adapter, "STATE_DB", str(state_db))
-    monkeypatch.setattr(sidebar.codex_adapter, "SESSIONS_DIR", str(tmp_path / "missing"))
-    monkeypatch.setattr(sidebar.claude_adapter, "_get_claude_dirs", lambda: [])
-
-    assert sidebar.find_session_transcript("session-1") == ("codex", rollout)
-    assert sidebar.find_session_transcript("../unsafe") is None
-
-
-def test_transcript_line_prompt_detection_matches_agent_parsers():
-    def raw(data: dict) -> bytes:
-        return json.dumps(data, ensure_ascii=False).encode()
-
-    assert sidebar.transcript_line_has_prompt(raw({
-        "type": "event_msg",
-        "payload": {"type": "user_message", "message": "Codex 真提示词"},
-    }), "codex", "cx")
-    assert not sidebar.transcript_line_has_prompt(raw({
-        "type": "event_msg",
-        "payload": {"type": "user_message", "message": "<environment_context>注入"},
-    }), "codex", "cx")
-    assert sidebar.transcript_line_has_prompt(raw(
-        _u("Claude 真提示词", sessionId="cc"),
-    ), "claude-code", "cc")
-    assert not sidebar.transcript_line_has_prompt(raw(
-        _u("/compact", sessionId="cc"),
-    ), "claude-code", "cc")
-    assert not sidebar.transcript_line_has_prompt(raw(
-        _u("其他会话", sessionId="other"),
-    ), "claude-code", "cc")
-    assert sidebar.transcript_line_turn_id(raw({
-        "type": "event_msg",
-        "payload": {"type": "task_started", "turn_id": "turn-1"},
-    }), "codex") == "turn-1"
-    is_prompt, event_id = sidebar.transcript_line_prompt_event(raw(
-        _u("带 ID", sessionId="cc", promptId="prompt-1"),
-    ), "claude-code", "cc")
-    assert is_prompt and event_id == "prompt-1"
 
 
 def test_claude_pending_tool_tracking(tmp_path):
@@ -229,7 +179,6 @@ def test_codex_parse(tmp_path):
     assert parsed.session_id == "cx-1"
     assert parsed.project == "beta"  # cwd 不存在 .git → 落最后一段
     assert [p.text for p in parsed.prompts] == ["介绍下这个项目"]
-    assert parsed.prompts[0].event_id == "turn-cx-1"
     assert parsed.branch == "main"  # session_meta.git.branch
     assert parsed.pending_tool is True  # task_started 无 complete
 

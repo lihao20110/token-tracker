@@ -17,7 +17,6 @@ hooks 事件流（PermissionRequest 等授权的精确信号）留 v2 接入；�
 import json
 import os
 import re
-import sqlite3
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -61,7 +60,6 @@ _CACHE_MAX = 512  # 解析缓存上限（常驻进程防无限增长，超了整
 class Prompt:
     text: str
     timestamp: datetime | None
-    event_id: str = ""  # CC promptId / Codex turn_id；双事件源去重，不参与渲染
 
 
 @dataclass
@@ -116,7 +114,6 @@ class _CodexParseState:
     last_reply: str = ""
     last_event: datetime | None = None
     branch: str = ""
-    current_turn_id: str = ""
 
 
 # 按 (path, max_prompts) → (mtime_ns, size, result) 缓存：相同条数且文件未变才复用。
@@ -142,112 +139,6 @@ def scan_sessions(hours_back: int = DEFAULT_HOURS_BACK,
         sessions.extend(_scan_codex_sessions(cutoff, now, heartbeat, max_prompts, term_map=term_map))
     sessions.sort(key=lambda s: s.last_activity, reverse=True)
     return sessions[:max_sessions]
-
-
-def find_session_transcript(session_id: str) -> tuple[str, Path] | None:
-    """定位指定会话的 transcript；供单会话 split 做增量监听。
-
-    Codex 优先读 state DB 的权威 ``rollout_path``，再按当前文件名格式兜底；
-    Claude Code 的 transcript 文件名就是 session id。所有来源都可能随上游版本变化，
-    因此找不到时只返回 None，由监听线程稍后重试。
-    """
-    if not session_id or Path(session_id).name != session_id:
-        return None
-
-    conn: sqlite3.Connection | None = None
-    try:
-        conn = sqlite3.connect(f"file:{codex_adapter.STATE_DB}?mode=ro", uri=True)
-        row = conn.execute(
-            "SELECT rollout_path FROM threads WHERE id = ?",
-            (session_id,),
-        ).fetchone()
-        if row and isinstance(row[0], str):
-            path = Path(row[0])
-            if path.is_file():
-                return "codex", path
-    except (sqlite3.Error, OSError):
-        pass
-    finally:
-        if conn is not None:
-            conn.close()
-
-    codex_base = Path(codex_adapter.SESSIONS_DIR)
-    if codex_base.is_dir():
-        for path in codex_base.rglob(f"*{session_id}.jsonl"):
-            if path.is_file():
-                return "codex", path
-
-    for base_dir in claude_adapter._get_claude_dirs():
-        base = Path(base_dir)
-        if not base.is_dir():
-            continue
-        for path in base.rglob(f"{session_id}.jsonl"):
-            if path.is_file():
-                return "claude-code", path
-    return None
-
-
-def _transcript_line_data(raw: bytes) -> dict | None:
-    try:
-        data = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def transcript_line_turn_id(raw: bytes, agent_id: str) -> str:
-    """提取 Codex ``task_started`` 的 turn id，供随后 user_message 去重。"""
-    data = _transcript_line_data(raw)
-    if data is None or agent_id != "codex" or data.get("type") != "event_msg":
-        return ""
-    payload = data.get("payload")
-    if not isinstance(payload, dict) or payload.get("type") != "task_started":
-        return ""
-    turn_id = payload.get("turn_id")
-    return turn_id if isinstance(turn_id, str) else ""
-
-
-def transcript_line_prompt_event(raw: bytes, agent_id: str, session_id: str) -> tuple[bool, str]:
-    """判断追加 JSONL 是否为真实提示词，并返回可用的事件 ID。
-
-    这里只做轻量检测；命中后仍调用完整 scanner 生成权威会话快照，避免 hook
-    与 transcript 双通道同时到达时重复追加。Codex 的 turn id 位于前置
-    ``task_started`` 行，由 watcher 关联；Claude 的 ``promptId`` 可直接返回。
-    """
-    data = _transcript_line_data(raw)
-    if data is None:
-        return False, ""
-
-    if agent_id == "codex":
-        payload = data.get("payload")
-        if data.get("type") != "event_msg" or not isinstance(payload, dict):
-            return False, ""
-        text = payload.get("message")
-        is_prompt = (
-            payload.get("type") == "user_message"
-            and isinstance(text, str)
-            and bool(text.strip())
-            and not text.lstrip().startswith(_CODEX_SKIP_PREFIXES)
-        )
-        return is_prompt, ""
-
-    if agent_id != "claude-code" or data.get("type") != "user" or data.get("isSidechain"):
-        return False, ""
-    row_session_id = data.get("sessionId")
-    if isinstance(row_session_id, str) and row_session_id and row_session_id != session_id:
-        return False, ""
-    if data.get("isMeta") or data.get("isCompactSummary") or data.get("isVisibleInTranscriptOnly"):
-        return False, ""
-    message = data.get("message")
-    if not isinstance(message, dict) or _claude_prompt_text(message.get("content")) is None:
-        return False, ""
-    prompt_id = data.get("promptId") or data.get("prompt_id")
-    return True, prompt_id if isinstance(prompt_id, str) else ""
-
-
-def transcript_line_has_prompt(raw: bytes, agent_id: str, session_id: str) -> bool:
-    """兼容调用方：只返回追加行是否为当前会话真实提示词。"""
-    return transcript_line_prompt_event(raw, agent_id, session_id)[0]
 
 
 def _infer_state(now: datetime, last_activity: datetime,
@@ -544,12 +435,7 @@ def _consume_claude_user(data: dict, state: _ClaudeParseState) -> None:
     if text is None:  # 注入通知/命令记录等：不算「主人动过」，不计活动时间
         return
     ts = _parse_ts(data.get("timestamp"))
-    prompt_id = data.get("promptId") or data.get("prompt_id")
-    state.prompts.append(Prompt(
-        text=text,
-        timestamp=ts,
-        event_id=prompt_id if isinstance(prompt_id, str) else "",
-    ))
+    state.prompts.append(Prompt(text=text, timestamp=ts))
     state.last_event = ts or state.last_event
     state.pending_tool = False
 
@@ -690,18 +576,15 @@ def _consume_codex_event(payload: dict, ts: datetime | None, state: _CodexParseS
     if event_type == "user_message":
         text = (payload.get("message") or "").strip()
         if text and not text.startswith(_CODEX_SKIP_PREFIXES):
-            state.prompts.append(Prompt(text=text, timestamp=ts, event_id=state.current_turn_id))
+            state.prompts.append(Prompt(text=text, timestamp=ts))
     elif event_type == "agent_message":
         reply = payload.get("message") or ""
         if reply.strip():
             state.last_reply = reply
     elif event_type == "task_started":
         state.pending_task = True
-        turn_id = payload.get("turn_id")
-        state.current_turn_id = turn_id if isinstance(turn_id, str) else ""
     elif event_type in ("task_complete", "turn_aborted"):
         state.pending_task = False
-        state.current_turn_id = ""
 
 
 _HINT_MAX_LINES = 5   # 「下一步」显示上限（AskUserQuestion 格式化路径用；打分路径上限 3）
