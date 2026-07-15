@@ -111,8 +111,8 @@ async def test_click_session_head_dispatches_jump(monkeypatch):
     monkeypatch.setattr(app, "action_jump_to", lambda sid: called.append(sid), raising=False)
     async with app.run_test(size=(60, 24)) as pilot:
         await pilot.pause()
-        # 内容行序：0=标题、1/2/3=北京/洛杉矶/伦敦时钟、4=空行、5=会话头行
-        await pilot.click("#sidebar-body", offset=(4, 5))
+        # 内容行序：0=标题、1=三地时钟、2=空行、3=会话头行
+        await pilot.click("#sidebar-body", offset=(4, 3))
         await pilot.pause()
     assert called == ["s-click"]
 
@@ -133,9 +133,9 @@ async def test_session_head_hover_underlines_the_whole_link(monkeypatch):
     async with app.run_test(size=(70, 24)) as pilot:
         await pilot.pause()
         body = app.query_one("#sidebar-body", Static)
-        await pilot.hover("#sidebar-body", offset=(4, 5))
+        await pilot.hover("#sidebar-body", offset=(4, 3))
         await pilot.pause()
-        line = body.render_lines(Region(0, 5, body.size.width, 1))[0]
+        line = body.render_lines(Region(0, 3, body.size.width, 1))[0]
         linked = [segment for segment in line
                   if segment.style and segment.style._meta and "@click" in segment.style.meta]
 

@@ -565,9 +565,59 @@ def test_render_prompt_wraps_two_lines_with_ellipsis():
     assert all(len(ln.rstrip()) <= 40 - 2 for ln in body_lines)  # 右侧留白 2 格
 
 
+def test_render_history_prompt_uses_one_line_latest_uses_two():
+    now = datetime.now(UTC)
+    sessions = [LiveSession(
+        agent_id="claude-code",
+        session_id="s1",
+        project="compact-project",
+        last_activity=now,
+        state=WAITING,
+        prompts=[
+            Prompt("HISTORY-" + "old" * 40, now),
+            Prompt("LATEST-" + "new" * 40, now),
+        ],
+    )]
+    console = Console(record=True, width=40)
+    console.print(render_sidebar(sessions))
+    out = console.export_text().splitlines()
+    head_idx = next(i for i, line in enumerate(out) if "compact-project" in line)
+    prompt_lines = out[head_idx + 1:]
+
+    assert len(prompt_lines) == 3
+    assert prompt_lines[0].startswith("├ HISTORY-") and prompt_lines[0].rstrip().endswith("…")
+    assert prompt_lines[1].startswith("└ LATEST-")
+    assert prompt_lines[2].startswith("  ") and prompt_lines[2].rstrip().endswith("…")
+
+
+def test_render_idle_session_only_shows_latest_prompt_without_hint():
+    now = datetime.now(UTC)
+    sessions = [LiveSession(
+        agent_id="codex",
+        session_id="idle",
+        project="idle-project",
+        last_activity=now,
+        state=IDLE,
+        prompts=[Prompt("OLD-HIDDEN", now), Prompt("LATEST-" + "new" * 40, now)],
+        next_hint="HINT-HIDDEN",
+    )]
+    console = Console(record=True, width=40)
+    console.print(render_sidebar(sessions))
+    out = console.export_text().splitlines()
+    text = "\n".join(out)
+    head_idx = next(i for i, line in enumerate(out) if "idle-project" in line)
+    prompt_lines = out[head_idx + 1:]
+
+    assert "OLD-HIDDEN" not in text
+    assert "HINT-HIDDEN" not in text
+    assert len(prompt_lines) == 2
+    assert prompt_lines[0].startswith("└ LATEST-")
+    assert prompt_lines[1].startswith("  ") and prompt_lines[1].rstrip().endswith("…")
+
+
 def test_render_tree_glyphs_count_prompts():
     # 树状语义：每条提示词一个分支符（├，末条 └）——数分支即数提示词；
-    # 非末条折行的续行用 │ 延续轨道，与新条目肉眼可分
+    # 历史提示词只占一行，超出直接省略，不再产生 │ 续行
     now = datetime.now(UTC)
     long_prompt = "很长的提示词内容" * 15
     sessions = [LiveSession(agent_id="claude-code", session_id="s1", project="proj",
@@ -579,7 +629,8 @@ def test_render_tree_glyphs_count_prompts():
     out = console.export_text().splitlines()
     assert sum(1 for ln in out if ln.startswith("├")) == 2
     assert sum(1 for ln in out if ln.startswith("└")) == 1
-    assert any(ln.startswith("│") for ln in out)  # 首条折行的续行
+    assert not any(ln.startswith("│") for ln in out)
+    assert next(ln for ln in out if ln.startswith("├")).rstrip().endswith("…")
 
 
 def test_render_prompt_short_stays_single_line():
@@ -839,9 +890,8 @@ def test_render_mixed_cjk_ascii_fills_width():
     assert cell_len(hint_line.rstrip()) >= 40 - 2 - 2
 
 
-def test_render_header_count_and_dual_clocks():
+def test_render_header_count_and_compact_clock_line():
     import re as _re
-    from zoneinfo import ZoneInfo
     now = datetime.now(UTC)
     sessions = [LiveSession(agent_id="claude-code", session_id=f"s{i}", project="p",
                             last_activity=now, state=WAITING, prompts=[Prompt("x", now)])
@@ -850,12 +900,13 @@ def test_render_header_count_and_dual_clocks():
     console.print(render_sidebar(sessions))
     out = console.export_text().splitlines()
     assert "3" in out[0]  # 活跃会话计数在标题行
-    clock_lines = [ln for ln in out if _re.search(r"\d{2}:\d{2}:\d{2}", ln)]
-    assert len(clock_lines) == 3  # 北京 + 洛杉矶 + 伦敦三行时钟
-    for i, tz_name in enumerate(("Asia/Shanghai", "America/Los_Angeles", "Europe/London")):
-        local = datetime.now(ZoneInfo(tz_name))
-        assert local.strftime("%m-%d") in clock_lines[i]
-        assert local.strftime("%H:%M") in clock_lines[i]  # 秒可能跨帧，比对到分钟
+    clock_lines = [ln for ln in out if all(label in ln for label in ("北京", "洛杉矶", "伦敦"))]
+    assert len(clock_lines) == 1
+    clock_line = clock_lines[0]
+    assert len(_re.findall(r"\d{2}:\d{2}", clock_line)) == 3
+    assert not _re.search(r"\d{2}:\d{2}:\d{2}", clock_line)
+    assert not _re.search(r"\d{2}-\d{2}", clock_line)
+    assert "周" not in clock_line
 
 
 def test_render_branch_and_session_separator():

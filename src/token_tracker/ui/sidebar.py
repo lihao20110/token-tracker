@@ -1,8 +1,9 @@
 """tt sidebar 的默认总览与自动分屏专属提示词视图。
 
 默认总览每会话一块：状态点 + 项目名 + agent/模型 + 距上次活动；下面缩进列最近提示词
-（时间正序，最新一条常亮、更早的调暗）。头行单行截断不折行；提示词最多折
-`_PROMPT_MAX_LINES` 行、超出末行加省略号、正文右侧固定留 `_RIGHT_PAD` 格空白。
+（时间正序，最新一条常亮、更早的调暗）。头行单行截断不折行；非空闲会话的历史
+提示词最多 1 行、最新最多 2 行；空闲会话只显示最新提示词，不显示「下一步」。
+超出末行加省略号，正文右侧固定留 `_RIGHT_PAD` 格空白。
 自动 1/3 分屏走独立 `render_split_sidebar`：列出当前会话全部完整提示词
 （时间倒序、稳定数字序号、树状连接、最新背景避开树线并右留一格），不影响默认总览。
 """
@@ -46,7 +47,8 @@ def _click_style(session_id: str) -> Style:
         _click_styles[session_id] = style
     return style
 
-_PROMPT_MAX_LINES = 2  # 每条提示词最多折 N 行，超出末行省略号
+_HISTORY_PROMPT_MAX_LINES = 1  # 历史提示词压成单行，优先给最新上下文留空间
+_LATEST_PROMPT_MAX_LINES = 2   # 最新提示词保留两行，超出末行省略号
 _HINT_MAX_WRAP = 3     # 「下一步」每行原文最多折 N 行，超出末行省略号（主人定：先正常折行，3 行放不下再省略）
 _RIGHT_PAD = 2         # 正文右侧留白，折行不顶到窗格右缘
 _SPLIT_RIGHT_PAD = 1   # 自动分屏右侧只留一格终端底色
@@ -185,25 +187,24 @@ class _SplitPrompt:
 
 
 def _clock_lines() -> list[Text]:
-    """三时区时钟行：标签（等宽对齐）+ 月-日 周几 时:分:秒。时区数据缺失时静默跳过。"""
-    weekdays = t("weekday_grid").split(",")
+    """三时区时钟合并为单行，只显示城市与时分；时区数据缺失时静默跳过。"""
     rows: list[tuple[str, datetime]] = []
     for label_key, tz_name in _CLOCK_ZONES:
         try:
             rows.append((t(label_key), datetime.now(ZoneInfo(tz_name))))
         except Exception:  # noqa: BLE001 - 无 tzdata 的环境（如裸 Windows）跳过该行即可
             continue
-    label_width = max((cell_len(lb) for lb, _ in rows), default=0)
-    out: list[Text] = []
-    for label, local in rows:
-        ln = Text(no_wrap=True, overflow="ellipsis")
-        ln.append(label, style=_S.blue)
-        ln.append(" " * (label_width - cell_len(label) + 1))
-        ln.append(local.strftime("%m-%d "), style=_S.dim)
-        ln.append(weekdays[(local.weekday() + 1) % 7] + " ", style=_S.dim)
-        ln.append(local.strftime("%H:%M:%S"))
-        out.append(ln)
-    return out
+    if not rows:
+        return []
+
+    line = Text(no_wrap=True, overflow="ellipsis")
+    for index, (label, local) in enumerate(rows):
+        if index:
+            line.append(" · ", style=_S.dim)
+        line.append(label, style=_S.blue)
+        line.append(" ")
+        line.append(local.strftime("%H:%M"))
+    return [line]
 
 
 def render_split_sidebar(sessions: list[LiveSession]) -> Group:
@@ -270,16 +271,17 @@ def render_sidebar(sessions: list[LiveSession], spinner_frame: int = 0,
             # 样式走 _click_style 缓存保证 link_id 跨帧稳定（hover 高亮才不会被重绘打断）
             head.stylize(_click_style(s.session_id))
         lines.append(head)
-        for i, p in enumerate(s.prompts):
-            last = i == len(s.prompts) - 1
+        visible_prompts = s.prompts[-1:] if s.state == IDLE else s.prompts
+        for prompt_index, p in enumerate(visible_prompts):
+            last = prompt_index == len(visible_prompts) - 1
             lines.append(_WrappedLine(
                 text=_one_line(p.text),
                 first=Text("└ " if last else "├ ", style=_S.dim),
                 cont=Text("  " if last else "│ ", style=_S.dim),
                 style="" if last else _S.dim,
-                max_lines=_PROMPT_MAX_LINES,
+                max_lines=(_LATEST_PROMPT_MAX_LINES if last else _HISTORY_PROMPT_MAX_LINES),
             ))
-        if s.next_hint:
+        if s.state != IDLE and s.next_hint:
             # 逐行显示（行结构由数据层 _hint_text 压缩整理、上限 5 行）：一行原文
             # 正常折行、最多 _HINT_MAX_WRAP 行仍放不下才末行省略；折行/续行等宽空格悬挂、正文列对齐
             label = Text()
