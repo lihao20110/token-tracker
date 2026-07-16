@@ -15,6 +15,7 @@
 - **多 Agent 统一追踪** — Claude Code + Codex 统一读取，多 Agent 按来源分组
 - **状态栏集成** — Claude Code 用官方 StatusLine 接口；**Codex 业界首创伪 statusline 方案**（hook 注入两行真彩色状态栏，把官方未开放的能力在 Codex 里做了出来）
 - **实时侧边栏** — `tt sidebar` 窄窗格常驻面板：全部活跃会话一屏总览（状态灯 + 最近提示词 + 「下一步」建议），点击会话直达对应 iTerm2 / tmux 窗格
+- **当前会话自动分屏** — Codex 中显式执行 `$tt-sidebar`，在原会话右侧自动打开 1/3 宽度的独立提示词侧边栏
 - **限额监控** — 实时 5h / 7d 配额百分比 + 重置倒计时
 - **多维成本分析** — 会话 / 日 / 周 / 月多维报表，等效成本统计
 - **定价识别** — litellm 在线定价 + 内置官方价双层兜底，覆盖 Claude / OpenAI / Gemini / Grok 及国产主流（Kimi / GLM / Qwen / 豆包 / DeepSeek / MiniMax / MiMo）；新模型自动套用同系列定价、不静默归零
@@ -101,6 +102,21 @@ Codex 官方暂不支持自定义 StatusLine。Token Tracker 通过 hook 注入�
 
 操作：鼠标拖拽选择文字，松开后自动复制；滚轮 / 方向键 / PgUp/PgDn 滚动，`q` / `Esc` / `Ctrl+C` 退出；`tt sidebar --once` 打印一帧快照即退。数据每 5s 刷新，只读本地会话记录、不写任何产物；加 `--claude` / `--codex` 可只看单个 agent。
 
+### Codex 当前会话自动 1/3 分屏（`$tt-sidebar`）
+
+`tt setup` 会把 `$tt-sidebar` 安装为用户级 Codex Skill。它与普通 `tt sidebar` 相互独立：普通命令继续显示全部活跃会话；Skill 只显示发起命令的当前 Codex 会话，右侧自动占 1/3 宽度，完整提示词按时间倒序展示，最新永远置顶。
+
+在 Codex 输入：
+
+```text
+$tt-sidebar
+```
+
+- 支持 iTerm2（需在 iTerm2 设置中启用 Python API）与 tmux；原会话窗格保持焦点。
+- `tt setup` 同时安装用户级 `UserPromptSubmit` Hook，用本地 FIFO 把新提示词推给已打开的分屏；无 sidebar 时立即返回，不轮询 transcript、不上传或持久化提示词。
+- Codex 会要求审查非托管 Hook：安装后运行 `/hooks`，信任 Token Tracker 对应项。Skill 未立即出现时重启 Codex。
+- `tt unsetup` 会一并移除 Token Tracker 管理的 Skill 与 Hook；若 `~/.agents/skills/tt-sidebar` 已是用户自己的同名 Skill，安装与卸载都不会覆盖它。
+
 ## 安装
 
 ```bash
@@ -109,7 +125,7 @@ curl -sSL https://raw.githubusercontent.com/stormzhang/token-tracker/main/instal
 
 脚本自动选最优安装方式（uv / pipx / 私有 venv），绕开 PEP 668、不污染系统 Python。
 
-> **升级**：重跑上面的命令即可（脚本幂等、自动升到最新）。
+> **升级**：重跑上面的命令即可（脚本幂等、自动升到最新）。包含新 Agent 集成的版本升级后，再运行一次 `tt setup`；例如 `$tt-sidebar` 需要由 setup 安装到 Codex 用户级 Skill 目录。
 > **卸载**：`tt unsetup`
 
 **升级后 `tt --version` 还是旧版？** 多半是旧版装在别的 Python 环境里遮蔽了新版（常见于 Windows、或早期用 `pip install` 装过）。卸载旧版后重装一次即可：
@@ -122,7 +138,7 @@ curl -sSL https://raw.githubusercontent.com/stormzhang/token-tracker/main/instal
 ## 使用
 
 ```bash
-tt setup          # 交互配置向导（终端：上下键选语言 / 主题 / 各组件）；非 tty 环境按推荐默认自动配置
+tt setup          # 配置状态栏，并安装 Codex $tt-sidebar Skill / 提示词 Hook
 tt                # 过去一年 token 热力图 + 顶部三段概览（= tt daily）
 tt daily          # 同上（tt 无参即进 daily）
 tt status         # 今日消耗、5h/7d 额度与今日会话

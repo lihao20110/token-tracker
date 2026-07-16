@@ -7,7 +7,7 @@ import tomllib
 from dataclasses import dataclass
 from importlib import resources
 
-from . import config
+from . import config, sidebar_install
 from .adapters.util import claude_home, codex_home
 from .i18n import t
 from .ui import themes
@@ -59,7 +59,6 @@ _LEGACY_PATHS = [
 
 def _load_template(name: str) -> str:
     return (resources.files("token_tracker.templates") / name).read_text(encoding="utf-8")
-
 
 
 # --- helpers ---
@@ -386,6 +385,14 @@ def needs_update() -> bool:
         return True
     if _codex_command_needs_sync():  # config.toml 里 Stop hook command 旧格式（同 #13/#14）
         return True
+    # setup_version 3 起，用户级 $tt-sidebar Skill 与 UserPromptSubmit hook 也属于 setup 产物。
+    # 老用户（setup_version < 3）由 cli 的升级引导统一安装，不在这里抢跑。
+    if (
+        os.path.isdir(CODEX_DIR)
+        and config.setup_version() >= 3
+        and (sidebar_install.skill_needs_sync() or sidebar_install.hook_needs_sync())
+    ):
+        return True
     return _cc_command_needs_sync()  # settings.json 里 command 格式过时也算待更新（issue #13/#14）
 
 
@@ -398,6 +405,8 @@ def update_hook() -> None:
         _sync_cc_command()
     if _codex_command_needs_sync():
         _sync_codex_command()
+    if os.path.isdir(CODEX_DIR) and config.setup_version() >= 3:
+        _setup_codex_sidebar(quiet=True)
 
 
 # --- setup ---
@@ -431,6 +440,7 @@ def setup(auto: bool = False, components: SetupComponents | None = None, quiet: 
 
     if has_codex:
         _setup_codex(components, quiet)
+        _setup_codex_sidebar(quiet)
     else:
         if not auto:
             p(f"[dim]{t('codex_not_found')}[/dim]")
@@ -569,6 +579,34 @@ def _setup_codex(components: SetupComponents, quiet: bool = False) -> None:
     p(f"[dim]{t('restart_codex')}[/dim]")
 
 
+def _setup_codex_sidebar(quiet: bool = False) -> None:
+    """安装用户级 $tt-sidebar Skill 与当前会话提示词 FIFO hook，不改变普通 tt sidebar。"""
+    p = (lambda *a, **k: None) if quiet else get_console().print
+    try:
+        skill_changed = sidebar_install.install_skill()
+    except FileExistsError:
+        get_console().print(
+            f"[yellow]{t('sidebar_skill_conflict', path=sidebar_install.SIDEBAR_SKILL_DIR)}[/yellow]"
+        )
+        skill_changed = False
+    if skill_changed:
+        p(
+            f"[green]✓[/green] "
+            f"{t('sidebar_skill_installed', path=sidebar_install.SIDEBAR_SKILL_DIR)}"
+        )
+
+    try:
+        hook_changed = sidebar_install.install_hook()
+    except ValueError:
+        get_console().print(
+            f"[red]{t('codex_hooks_corrupt', path=sidebar_install.CODEX_HOOKS)}[/red]"
+        )
+        hook_changed = False
+    if hook_changed:
+        p(f"[green]✓[/green] {t('sidebar_hook_installed')}")
+        p(f"[dim]{t('sidebar_hook_trust')}[/dim]")
+
+
 # --- unsetup ---
 
 def unsetup() -> None:
@@ -579,6 +617,7 @@ def unsetup() -> None:
         _unsetup_claude()
     if has_codex:
         _unsetup_codex()
+        _unsetup_codex_sidebar()
     if not has_cc and not has_codex:
         get_console().print(f"[dim]{t('no_agent_detected')}[/dim]")
 
@@ -635,3 +674,19 @@ def _unsetup_codex() -> None:
 
     with open(CODEX_CONFIG, "w", encoding="utf-8") as f:
         f.write(content)
+
+
+def _unsetup_codex_sidebar() -> None:
+    if sidebar_install.uninstall_skill():
+        get_console().print(
+            f"[green]✓[/green] {t('deleted_file', path=sidebar_install.SIDEBAR_SKILL_DIR)}"
+        )
+    try:
+        hook_removed = sidebar_install.uninstall_hook()
+    except ValueError:
+        get_console().print(
+            f"[red]{t('codex_hooks_corrupt_unsetup', path=sidebar_install.CODEX_HOOKS)}[/red]"
+        )
+        return
+    if hook_removed:
+        get_console().print(f"[green]✓[/green] {t('sidebar_hook_removed')}")

@@ -29,9 +29,10 @@ SCHEMA_VERSION = 1
 # 老用户 config 里没这字段 / 旧版本号 < 当前 → 触发重新引导（真终端弹 wizard、非 tty 静默 _auto_setup）。
 # 跟 SCHEMA_VERSION 解耦：那是数据格式版本，这是用户引导版本，bump 节奏完全不同。
 # 2（0.4.2）：强制所有现存用户（0.3.8/0.4.0=无字段=0、0.4.1=1，全 < 2）升级后重走一遍 setup。
+# 3：安装随包分发的用户级 Codex $tt-sidebar Skill + UserPromptSubmit hook。
 # 注：CC statusLine 变可选组件（issue #16/#17）时决定**不 bump**——小众需求不打断存量用户，
 # 存量 tt 用户 intent 缺失时由 is_setup 按「statusLine 已是 tt 的」推断为已配，想改的手动 tt setup。
-SETUP_VERSION = 2
+SETUP_VERSION = 3
 
 # 旧位置（独立 theme.json / lang.json），老用户首次读 config.json 不存在时自动合并迁移
 _LEGACY_THEME_PATH = os.path.join(CONFIG_DIR, "theme.json")

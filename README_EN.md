@@ -14,6 +14,7 @@ Custom StatusLine integration + CLI Dashboard — see token usage, cost, and rat
 
 - **Unified multi-agent tracking** — Claude Code + Codex in one place, grouped by source
 - **Status line integration** — Claude Code via official StatusLine API; **Codex industry-first faux statusline** (hook-injected two-line truecolor status — bringing an official-unsupported capability to Codex)
+- **Live sidebar** — `tt sidebar` shows all active sessions; `$tt-sidebar` opens a current-Codex-session-only pane on the right at one-third width
 - **Rate limit monitoring** — real-time 5h / 7d quota usage with reset countdown
 - **Multi-dimensional cost analysis** — per-session, daily, weekly, monthly cost breakdown
 - **Pricing resolution** — litellm live pricing + built-in official-price fallback, covering Claude / OpenAI / Gemini / Grok and major Chinese models (Kimi / GLM / Qwen / Doubao / DeepSeek / MiniMax / MiMo); new family members auto-priced, never silently $0
@@ -69,6 +70,12 @@ Codex doesn't yet support custom StatusLine. Token Tracker injects a **faux stat
 
 Renders 24-bit truecolor, **does not enter the model context** (verified), and **follows the current theme** (same source as the CLI reports / CC status line; `tt theme` switches all three together). `tt unsetup` removes it.
 
+## Live Sidebar
+
+Run `tt sidebar` in a narrow terminal pane for an all-session overview. In Codex, explicitly invoke `$tt-sidebar` to automatically open a separate right-side pane at one-third width containing only the current session's complete prompt history, newest first.
+
+`tt setup` installs the user-level Skill and a `UserPromptSubmit` hook. Review and trust the Token Tracker hook with `/hooks`; restart Codex if the new Skill does not appear immediately. The hook only attempts a local FIFO write while a matching sidebar is open—there is no transcript polling, prompt persistence, or upload. iTerm2 requires its Python API to be enabled; tmux is also supported. `tt unsetup` removes the managed Skill and hook without overwriting a user-owned skill of the same name.
+
 ## Reports at a Glance
 
 `tt status` — last-5h real-time panel (merged overview + 5h/7d quota + recent sessions)
@@ -95,7 +102,7 @@ curl -sSL https://raw.githubusercontent.com/stormzhang/token-tracker/main/instal
 
 The script auto-picks the best install method (uv / pipx / private venv), sidesteps PEP 668, and never pollutes system Python.
 
-> **Upgrade**: re-run the command above (the script is idempotent and pulls the latest).
+> **Upgrade**: re-run the command above (the script is idempotent and pulls the latest), then run `tt setup` once when a release adds a new agent integration such as `$tt-sidebar`.
 > **Uninstall**: `tt unsetup`
 
 **Still on the old version after upgrading?** An old copy installed in another Python environment is likely shadowing the new one (common on Windows, or if you installed via `pip install` early on). Uninstall the old copy, then re-run the curl install once:
@@ -108,13 +115,14 @@ curl -sSL https://raw.githubusercontent.com/stormzhang/token-tracker/main/instal
 ## Usage
 
 ```bash
-tt setup          # interactive setup wizard (terminal: language / theme / components); recommended defaults on non-tty
+tt setup          # configure status lines and install the Codex $tt-sidebar Skill / prompt hook
 tt                # last-12-months heatmap + top tri-section overview (= tt daily)
 tt daily          # same (tt with no args enters daily)
 tt status         # last-5h real-time panel
 tt weekly         # weekly report
 tt monthly        # monthly report
 tt sessions       # last 20 session details (tt sessions <n> to change count, --sort to change order)
+tt sidebar        # live all-session sidebar (--once prints one frame and exits)
 tt theme          # view / switch color theme (show / list / set / preview)
 tt unsetup        # uninstall and restore previous config
 tt --version      # show version (-v / -V)

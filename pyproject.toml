@@ -30,6 +30,8 @@ dependencies = [
     "questionary>=2.0,<3",
     # 仅 tt sidebar live 模式用（cli 延迟 import，日常 tt 启动不加载）；与 rich 同门，渲染对象直接复用
     "textual>=1.0",
+    # 仅 macOS 的 $tt-sidebar 自动 iTerm2 分屏 worker 加载；其它平台走 tmux、不安装
+    "iterm2>=2.9; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]
@@ -54,6 +56,9 @@ tt = "token_tracker.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"token_tracker.skills.tt_sidebar" = ["SKILL.md", "agents/*.yaml"]
 
 [tool.ruff]
 line-length = 120

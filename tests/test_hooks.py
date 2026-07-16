@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from token_tracker import config, hooks
+from token_tracker import config, hooks, sidebar_install
 
 
 @pytest.fixture(autouse=True)
@@ -27,6 +27,10 @@ def _isolate_real_home(tmp_path, monkeypatch):
     monkeypatch.setattr(hooks, "CODEX_DIR", str(home / ".codex"))
     monkeypatch.setattr(hooks, "CODEX_CONFIG", str(home / ".codex" / "config.toml"))
     monkeypatch.setattr(hooks, "CODEX_STATUSLINE_HOOK_PATH", str(tt / "codex-statusline.py"))
+    monkeypatch.setattr(sidebar_install, "CODEX_HOOKS", str(home / ".codex" / "hooks.json"))
+    monkeypatch.setattr(
+        sidebar_install, "SIDEBAR_SKILL_DIR", str(home / ".agents" / "skills" / "tt-sidebar")
+    )
     monkeypatch.setattr(hooks, "STATUS_FILE", str(tt / "tt-status.json"))
     monkeypatch.setattr(hooks, "TERMINAL_MAP_FILE", str(tt / "tt-terminal-map.json"))
     monkeypatch.setattr(hooks, "CC_BACKUP_PATH", str(tt / "cc-backup.json"))

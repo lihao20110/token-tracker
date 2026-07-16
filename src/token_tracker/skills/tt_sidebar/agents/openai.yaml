@@ -1,0 +1,6 @@
+interface:
+  display_name: "TT Sidebar"
+  short_description: "Monitor this session in a one-third sidebar split"
+  default_prompt: "Use $tt-sidebar to monitor only the current Codex session in a live sidebar split."
+policy:
+  allow_implicit_invocation: false
