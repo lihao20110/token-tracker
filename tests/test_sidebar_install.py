@@ -59,9 +59,9 @@ def test_hook_merge_idempotent_and_uninstall_preserves_user(tmp_path, monkeypatc
     monkeypatch.setattr(sidebar_install, "CODEX_HOOKS", str(path))
     monkeypatch.setattr(sidebar_install.sys, "executable", "/venv/bin/python")
 
-    assert sidebar_install.hook_needs_sync()
-    assert sidebar_install.install_hook()
-    assert not sidebar_install.install_hook()
+    assert sidebar_install.managed_hooks_need_sync(None)
+    assert sidebar_install.install_managed_hooks(None)
+    assert not sidebar_install.install_managed_hooks(None)
     data = json.loads(path.read_text(encoding="utf-8"))
     groups = data["hooks"]["UserPromptSubmit"]
     assert data["meta"] == "keep"
@@ -69,10 +69,82 @@ def test_hook_merge_idempotent_and_uninstall_preserves_user(tmp_path, monkeypatc
     command = groups[1]["hooks"][0]["command"]
     assert command == '"/venv/bin/python" -B -m token_tracker.sidebar_command prompt-hook --agent codex'
 
-    assert sidebar_install.uninstall_hook()
+    assert sidebar_install.uninstall_managed_hooks()
     assert json.loads(path.read_text(encoding="utf-8")) == {
         "meta": "keep", "hooks": {"UserPromptSubmit": [user_group]},
     }
+
+
+def test_managed_hooks_merge_both_events_and_uninstall_preserves_user(tmp_path, monkeypatch):
+    path = tmp_path / ".codex" / "hooks.json"
+    path.parent.mkdir()
+    user_prompt = {
+        "hooks": [{"type": "command", "command": "python3 user-prompt.py", "timeout": 9}],
+    }
+    user_stop = {
+        "hooks": [{"type": "command", "command": "python3 user-stop.py", "timeout": 7}],
+    }
+    path.write_text(
+        json.dumps({
+            "meta": "keep",
+            "hooks": {"UserPromptSubmit": [user_prompt], "Stop": [user_stop]},
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sidebar_install, "CODEX_HOOKS", str(path))
+    monkeypatch.setattr(sidebar_install.sys, "executable", "/installed/python")
+    statusline_command = '"/installed/python" "/cfg/token-tracker/codex-statusline.py"'
+
+    assert sidebar_install.managed_hooks_need_sync(statusline_command)
+    assert sidebar_install.install_managed_hooks(statusline_command)
+    assert not sidebar_install.install_managed_hooks(statusline_command)
+    assert not sidebar_install.managed_hooks_need_sync(statusline_command)
+    assert sidebar_install.statusline_hook_present()
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["meta"] == "keep"
+    assert data["hooks"]["UserPromptSubmit"][0] == user_prompt
+    assert data["hooks"]["Stop"][0] == user_stop
+    assert data["hooks"]["UserPromptSubmit"][1]["hooks"][0]["command"] == (
+        '"/installed/python" -B -m token_tracker.sidebar_command prompt-hook --agent codex'
+    )
+    assert data["hooks"]["Stop"][1]["hooks"][0] == {
+        "type": "command",
+        "command": statusline_command,
+        "timeout": 10,
+    }
+
+    assert sidebar_install.uninstall_managed_hooks()
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "meta": "keep",
+        "hooks": {"UserPromptSubmit": [user_prompt], "Stop": [user_stop]},
+    }
+
+
+def test_managed_hooks_disable_statusline_keeps_prompt_hook(tmp_path, monkeypatch):
+    path = tmp_path / "hooks.json"
+    path.write_text(
+        json.dumps({
+            "hooks": {
+                "Stop": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": '"/old/python" "/old/tt-statusline.py"',
+                        "timeout": 10,
+                    }],
+                }],
+            },
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sidebar_install, "CODEX_HOOKS", str(path))
+    monkeypatch.setattr(sidebar_install.sys, "executable", "/installed/python")
+
+    assert sidebar_install.install_managed_hooks(None)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert "Stop" not in data["hooks"]
+    assert len(data["hooks"]["UserPromptSubmit"]) == 1
+    assert not sidebar_install.statusline_hook_present()
 
 
 def test_hook_migrates_local_prototype(tmp_path, monkeypatch):
@@ -86,7 +158,7 @@ def test_hook_migrates_local_prototype(tmp_path, monkeypatch):
     ]}]}}), encoding="utf-8")
     monkeypatch.setattr(sidebar_install, "CODEX_HOOKS", str(path))
 
-    assert sidebar_install.install_hook()
+    assert sidebar_install.install_managed_hooks(None)
     raw = path.read_text(encoding="utf-8")
     assert "prompt_hook.py" not in raw
     assert raw.count("token_tracker.sidebar_command") == 1
@@ -97,7 +169,7 @@ def test_hook_refuses_corrupt_json(tmp_path, monkeypatch):
     path.write_text("{broken", encoding="utf-8")
     monkeypatch.setattr(sidebar_install, "CODEX_HOOKS", str(path))
 
-    assert not sidebar_install.hook_needs_sync()
+    assert not sidebar_install.managed_hooks_need_sync(None)
     with pytest.raises(ValueError):
-        sidebar_install.install_hook()
+        sidebar_install.install_managed_hooks(None)
     assert path.read_text(encoding="utf-8") == "{broken"

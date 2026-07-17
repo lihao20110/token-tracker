@@ -219,78 +219,55 @@ def test_codex_statusline_records_terminal_map_without_touching_cc_status(tmp_pa
     }
 
 
-def test_codex_statusline_install_uninstall_roundtrip(tmp_path, monkeypatch):
-    # 末尾追加 tt Stop 段、保留用户已有 Stop hook；幂等；卸载删净 tt 段、留用户项。
-    monkeypatch.setattr(hooks, "CODEX_STATUSLINE_HOOK_PATH", str(tmp_path / "tt-statusline.py"))
+def test_codex_statusline_config_migration_preserves_state_and_user_stop(tmp_path, monkeypatch):
+    # 只迁移 Token Tracker 的旧内联 Stop；[hooks.state] 信任记录与用户 Stop 一字不动。
+    import tomllib
+
+    script = tmp_path / "codex-statusline.py"
+    monkeypatch.setattr(hooks, "CODEX_STATUSLINE_HOOK_PATH", str(script))
+    script.write_text("managed", encoding="utf-8")
     terminal_map = tmp_path / "tt-terminal-map.json"
     terminal_map.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(hooks, "TERMINAL_MAP_FILE", str(terminal_map))
-    base = (
+    content = (
         '[tui]\nstatus_line = ["project"]\n\n'
+        "[hooks.state]\n"
+        'enabled = true\n\n'
+        '[hooks.state."config.toml:stop:0:0"]\n'
+        'trusted_hash = "sha256:keep-me"\n\n'
         '[[hooks.Stop]]\n\n'
-        '[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "mine"\ntimeout = 5\n'
+        '[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "/usr/bin/my-other-stop"\ntimeout = 3\n\n'
+        '[[hooks.Stop]]\n\n'
+        '[[hooks.Stop.hooks]]\ntype = "command"\n'
+        f"command = 'python3 {script}'\n"
+        "timeout = 10\n"
     )
-    installed = hooks._install_codex_statusline(base, "python3")
-    assert "tt-statusline" in installed and 'command = "mine"' in installed
-    assert hooks._install_codex_statusline(installed, "python3") == installed  # 幂等
-    removed = hooks._uninstall_codex_statusline(installed)
-    assert "tt-statusline" not in removed and 'command = "mine"' in removed
+
+    migrated = hooks._migrate_codex_statusline_config(content)
+    assert str(script) not in migrated
+    assert "/usr/bin/my-other-stop" in migrated
+    assert '[hooks.state."config.toml:stop:0:0"]' in migrated
+    assert 'trusted_hash = "sha256:keep-me"' in migrated
+    parsed = tomllib.loads(migrated)
+    assert parsed["hooks"]["state"]["config.toml:stop:0:0"]["trusted_hash"] == "sha256:keep-me"
+    assert parsed["hooks"]["Stop"][0]["hooks"][0]["command"] == "/usr/bin/my-other-stop"
+
+    removed = hooks._uninstall_codex_statusline(content)
+    assert removed == migrated
+    assert not script.exists()
     assert not terminal_map.exists()
 
 
-def test_codex_statusline_install_updates_stale_python(tmp_path, monkeypatch):
-    # 回归：用户升级 Python / 切换 conda/venv 后再跑 tt setup，
-    # 老的 codex-statusline 段被无脑幂等保留 → command 指向已死 python → 状态栏半残（issue 用户反馈）。
-    monkeypatch.setattr(hooks, "CODEX_STATUSLINE_HOOK_PATH", str(tmp_path / "codex-statusline.py"))
-    first = hooks._install_codex_statusline("", "/old/python")
-    assert "/old/python" in first
-    # 同 python 再装 → 幂等保持
-    assert hooks._install_codex_statusline(first, "/old/python") == first
-    # 换 python（用户升级了 Python / 切了环境）→ 必须重写、删旧段、装新段
-    second = hooks._install_codex_statusline(first, "/new/python")
-    assert "/new/python" in second
-    assert "/old/python" not in second  # 死路径清干净
-    assert second.count("[[hooks.Stop]]") == 1  # 没残留两段
-
-
-def test_codex_statusline_windows_path_toml_parses(tmp_path, monkeypatch):
-    # 回归 ×2：① Windows 路径含 \U \A \P 等被 TOML basic string 当 unicode 转义起始符（issue 用户反馈）
-    # —— 写入的 command 必须用 literal string（单引号）包裹；② command 与 CC 侧同治（#13/#14）：
-    # 反斜杠转正斜杠 + 双引号包路径（防 `C:\Program Files\...` 空格断词），tomllib 能原样解析回来。
-    import tomllib
-    monkeypatch.setattr(hooks, "CODEX_STATUSLINE_HOOK_PATH",
-                        r"C:\Users\test\.config\token-tracker\codex-statusline.py")
-    monkeypatch.setattr(hooks, "_write_codex_statusline_script", lambda: None)  # 别在 macOS 上真写 Windows 路径
-    monkeypatch.setattr(hooks.os, "name", "nt")
-    py = r"C:\Program Files\Python313\python.exe"  # 含空格：旧裸拼接会在这里断词
-    content = hooks._install_codex_statusline("", py)
-    parsed = tomllib.loads(content)
-    assert parsed["hooks"]["Stop"][0]["hooks"][0]["command"] == \
-        '"C:/Program Files/Python313/python.exe" "C:/Users/test/.config/token-tracker/codex-statusline.py"'
-
-
-def test_codex_statusline_migrates_legacy_bare_command(tmp_path, monkeypatch):
-    # 老用户 config.toml 里是旧裸拼接 command → 再跑 install 必须替换成新引号格式、只留一段。
-    monkeypatch.setattr(hooks, "CODEX_STATUSLINE_HOOK_PATH", str(tmp_path / "codex-statusline.py"))
-    legacy = (
-        '[tui]\nstatus_line = ["project"]\n\n'
-        '[[hooks.Stop]]\n\n'
-        "[[hooks.Stop.hooks]]\n"
-        'type = "command"\n'
-        f"command = 'python3 {tmp_path / 'codex-statusline.py'}'\n"
-        "timeout = 10\n"
-    )
-    migrated = hooks._install_codex_statusline(legacy, "python3")
-    assert f'command = \'"python3" "{tmp_path / "codex-statusline.py"}"\'' in migrated
-    assert migrated.count("[[hooks.Stop]]") == 1  # 旧段删净、无重复
-    assert hooks._install_codex_statusline(migrated, "python3") == migrated  # 新格式幂等
-
-
-def test_codex_command_needs_sync_and_update_hook(tmp_path, monkeypatch):
-    # 老用户升级后跑任意 tt 命令：needs_update 检出旧格式 → update_hook 自动重写 config.toml。
+def test_codex_hooks_update_migrates_inline_and_refreshes_both_commands(tmp_path, monkeypatch):
+    # 老用户升级：旧 config.toml Stop + 指向项目 .venv 的 UserPromptSubmit 一次迁到 hooks.json，
+    # 两个 handler 都改用当前安装版解释器；[hooks.state] 保留。
     codex_config = tmp_path / "config.toml"
     script = tmp_path / "codex-statusline.py"
     codex_config.write_text(
+        "[hooks.state]\n"
+        'enabled = true\n\n'
+        '[hooks.state."config.toml:stop:0:0"]\n'
+        'trusted_hash = "sha256:keep-me"\n\n'
         '[[hooks.Stop]]\n\n'
         "[[hooks.Stop.hooks]]\n"
         'type = "command"\n'
@@ -298,20 +275,93 @@ def test_codex_command_needs_sync_and_update_hook(tmp_path, monkeypatch):
         "timeout = 10\n",
         encoding="utf-8",
     )
+    codex_hooks = tmp_path / "hooks.json"
+    codex_hooks.write_text(json.dumps({
+        "hooks": {
+            "UserPromptSubmit": [{
+                "hooks": [{
+                    "type": "command",
+                    "command": (
+                        '"/project/.venv/bin/python" -B -m '
+                        "token_tracker.sidebar_command prompt-hook --agent codex"
+                    ),
+                    "timeout": 2,
+                }],
+            }],
+        },
+    }), encoding="utf-8")
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir()
     monkeypatch.setattr(hooks, "CODEX_CONFIG", str(codex_config))
+    monkeypatch.setattr(hooks, "CODEX_DIR", str(codex_dir))
     monkeypatch.setattr(hooks, "CODEX_STATUSLINE_HOOK_PATH", str(script))
     monkeypatch.setattr(hooks, "HOOK_SCRIPT_PATH", str(tmp_path / "claude-statusline.py"))  # CC 未装
     monkeypatch.setattr(hooks, "CLAUDE_SETTINGS", str(tmp_path / "settings.json"))
+    monkeypatch.setattr(sidebar_install, "CODEX_HOOKS", str(codex_hooks))
+    monkeypatch.setattr(sidebar_install, "SIDEBAR_SKILL_DIR", str(tmp_path / "tt-sidebar"))
     monkeypatch.setattr(hooks.sys, "executable", "/new/python3")
     monkeypatch.setattr(hooks.os, "name", "posix")
+    config.save_codex_faux_statusline(True)
+    config.save_setup_version(config.SETUP_VERSION)
+    script.write_text(hooks._render_codex_statusline_hook(), encoding="utf-8")
 
-    assert hooks._codex_command_needs_sync()
     assert hooks.needs_update()
     hooks.update_hook()
     content = codex_config.read_text(encoding="utf-8")
-    assert f'command = \'"/new/python3" "{script}"\'' in content
-    assert not hooks._codex_command_needs_sync()  # 重写后不再触发
-    assert content.count("[[hooks.Stop]]") == 1
+    assert "[[hooks.Stop]]" not in content
+    assert 'trusted_hash = "sha256:keep-me"' in content
+    installed = json.loads(codex_hooks.read_text(encoding="utf-8"))["hooks"]
+    assert installed["Stop"][0]["hooks"][0]["command"] == f'"/new/python3" "{script}"'
+    assert installed["UserPromptSubmit"][0]["hooks"][0]["command"] == (
+        '"/new/python3" -B -m token_tracker.sidebar_command prompt-hook --agent codex'
+    )
+    assert not hooks.needs_update()
+
+
+def test_codex_hooks_corrupt_json_keeps_inline_stop(tmp_path, monkeypatch, capsys):
+    # 先写 hooks.json、成功后才删 config.toml：JSON 损坏时必须保留旧 Stop，避免迁移失败让功能消失。
+    script = tmp_path / "codex-statusline.py"
+    codex_config = tmp_path / "config.toml"
+    original = (
+        "[hooks.state]\n"
+        'enabled = true\n\n'
+        '[[hooks.Stop]]\n\n'
+        '[[hooks.Stop.hooks]]\ntype = "command"\n'
+        f"command = 'python3 {script}'\n"
+        "timeout = 10\n"
+    )
+    codex_config.write_text(original, encoding="utf-8")
+    codex_hooks = tmp_path / "hooks.json"
+    codex_hooks.write_text("{broken", encoding="utf-8")
+    monkeypatch.setattr(hooks, "CODEX_CONFIG", str(codex_config))
+    monkeypatch.setattr(hooks, "CODEX_STATUSLINE_HOOK_PATH", str(script))
+    monkeypatch.setattr(sidebar_install, "CODEX_HOOKS", str(codex_hooks))
+    config.save_codex_faux_statusline(True)
+
+    assert not hooks._sync_codex_managed_hooks(quiet=True)
+    assert codex_config.read_text(encoding="utf-8") == original
+    assert codex_hooks.read_text(encoding="utf-8") == "{broken"
+    assert "hooks.json" in capsys.readouterr().out
+
+
+def test_codex_statusline_windows_path_is_json_safe(tmp_path, monkeypatch):
+    # hooks.json 取代内联 TOML 后，Windows 路径仍转正斜杠并用双引号包裹，含空格也不会断词。
+    codex_hooks = tmp_path / "hooks.json"
+    monkeypatch.setattr(sidebar_install, "CODEX_HOOKS", str(codex_hooks))
+    monkeypatch.setattr(
+        hooks,
+        "CODEX_STATUSLINE_HOOK_PATH",
+        r"C:\Users\test\.config\token-tracker\codex-statusline.py",
+    )
+    monkeypatch.setattr(hooks.os, "name", "nt")
+    command = hooks._codex_statusline_command(r"C:\Program Files\Python313\python.exe")
+    assert command == (
+        '"C:/Program Files/Python313/python.exe" '
+        '"C:/Users/test/.config/token-tracker/codex-statusline.py"'
+    )
+    assert sidebar_install.install_managed_hooks(command)
+    parsed = json.loads(codex_hooks.read_text(encoding="utf-8"))
+    assert parsed["hooks"]["Stop"][0]["hooks"][0]["command"] == command
 
 
 def test_codex_statusline_version_roundtrip(tmp_path, monkeypatch):
@@ -450,15 +500,21 @@ def test_cli_setup_flow_no_agent(monkeypatch):
 
 
 def test_codex_statusline_uninstall_keeps_other_stop_hooks(tmp_path, monkeypatch):
-    # 卸载只移除 tt 自己追加的那段 [[hooks.Stop]]，用户已有的 Stop hook 不动。
-    monkeypatch.setattr(hooks, "CODEX_STATUSLINE_HOOK_PATH", str(tmp_path / "tt-statusline.py"))
+    # 卸载只移除 tt 旧版追加的内联 [[hooks.Stop]]，用户已有的 Stop hook 不动。
+    script = tmp_path / "tt-statusline.py"
+    monkeypatch.setattr(hooks, "CODEX_STATUSLINE_HOOK_PATH", str(script))
     user_stop = (
         '\n[[hooks.Stop]]\n\n'
         '[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "/usr/bin/my-other-stop"\ntimeout = 3\n'
     )
-    base = '[tui]\nstatus_line = ["project"]\n' + user_stop
-    installed = hooks._install_codex_statusline(base, "python3")
-    removed = hooks._uninstall_codex_statusline(installed)
+    tt_stop = (
+        '\n[[hooks.Stop]]\n\n'
+        '[[hooks.Stop.hooks]]\ntype = "command"\n'
+        f"command = 'python3 {script}'\ntimeout = 10\n"
+    )
+    removed = hooks._uninstall_codex_statusline(
+        '[tui]\nstatus_line = ["project"]\n' + user_stop + tt_stop
+    )
     assert "tt-statusline" not in removed
     assert "/usr/bin/my-other-stop" in removed  # 用户的 Stop 完整保留
 
@@ -640,23 +696,30 @@ def test_statusline_progress_bar_empty_grid_tinted(tmp_path):
     assert "░" in out60 and esc.findall(out60)[-1] + "░" not in out60  # pct>0：未填充格被染色、不在 reset 后
 
 
-def test_setup_codex_creates_missing_config(tmp_path, monkeypatch):
-    # 装了 Codex（~/.codex 目录在）但还没 config.toml → setup 应创建该文件并写入伪 statusline hook。
-    # 新版不再动 [tui].status_line（伪 statusline 比官方更全）。
+def test_setup_codex_uses_hooks_json_without_creating_config(tmp_path, monkeypatch):
+    # 装了 Codex 但还没 config.toml → 两个 Hook 都写 hooks.json，不为 Hook 新建空 config.toml。
     home = tmp_path / "home"
     (home / ".codex").mkdir(parents=True)  # 只有目录、无 config.toml
     codex_config = home / ".codex" / "config.toml"
+    codex_hooks = home / ".codex" / "hooks.json"
     monkeypatch.setattr(hooks, "CODEX_DIR", str(home / ".codex"))
     monkeypatch.setattr(hooks, "CODEX_CONFIG", str(codex_config))
-    monkeypatch.setattr(hooks, "CODEX_STATUSLINE_HOOK_PATH", str(home / ".codex" / "tt-statusline.py"))
+    tt_dir = home / ".config" / "token-tracker"
+    monkeypatch.setattr(hooks, "_TT", str(tt_dir))
+    monkeypatch.setattr(
+        hooks,
+        "CODEX_STATUSLINE_HOOK_PATH",
+        str(tt_dir / "codex-statusline.py"),
+    )
+    monkeypatch.setattr(sidebar_install, "CODEX_HOOKS", str(codex_hooks))
     monkeypatch.setattr(hooks.config, "CONFIG_PATH", str(tmp_path / "tt-config.json"))  # 隔离 config.json
 
     assert not codex_config.exists()
     hooks._setup_codex(hooks.SetupComponents(), quiet=True)
-    assert codex_config.exists()  # 已创建
-    content = codex_config.read_text()
-    assert "five-hour-limit" not in content  # 新版不接管 status_line
-    assert "tt-statusline" in content        # 伪 statusline Stop hook 写入
+    assert not codex_config.exists()
+    installed = json.loads(codex_hooks.read_text(encoding="utf-8"))["hooks"]
+    assert set(installed) == {"Stop", "UserPromptSubmit"}
+    assert "codex-statusline.py" in installed["Stop"][0]["hooks"][0]["command"]
 
 
 def test_detect_system_lang_non_darwin_falls_back_to_env(monkeypatch):

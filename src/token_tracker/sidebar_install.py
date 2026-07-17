@@ -1,4 +1,4 @@
-"""安装随包分发的 Codex ``$tt-sidebar`` Skill 与提示词同步 Hook。"""
+"""安装随包分发的 Codex ``$tt-sidebar`` Skill 与 Token Tracker 用户级 Hooks。"""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import json
 import os
 import stat
 import sys
+from collections.abc import Callable
 from importlib import resources
 
 from .adapters.util import codex_home
@@ -17,7 +18,8 @@ SIDEBAR_SKILL_DIR = os.path.join(os.path.expanduser("~"), ".agents", "skills", "
 _SKILL_PACKAGE = "token_tracker.skills.tt_sidebar"
 _SKILL_FILES = ("SKILL.md", "agents/openai.yaml")
 _SKILL_MARKER = "<!-- token-tracker-managed -->"
-_HOOK_TOKEN = "token_tracker.sidebar_command prompt-hook --agent codex"
+_PROMPT_HOOK_TOKEN = "token_tracker.sidebar_command prompt-hook --agent codex"
+_STATUSLINE_HOOK_TOKENS = ("codex-statusline.py", "tt-statusline.py")
 
 
 def _load_skill_resource(relative_path: str) -> str:
@@ -137,7 +139,7 @@ def uninstall_skill() -> bool:
     return changed
 
 
-def _hook_handler() -> dict:
+def _prompt_hook_handler() -> dict:
     return {
         "type": "command",
         "command": build_module_command(
@@ -147,16 +149,31 @@ def _hook_handler() -> dict:
     }
 
 
-def _is_hook_handler(handler) -> bool:
+def _statusline_hook_handler(command: str) -> dict:
+    return {
+        "type": "command",
+        "command": command,
+        "timeout": 10,
+    }
+
+
+def _is_prompt_hook_handler(handler) -> bool:
     if not isinstance(handler, dict):
         return False
     command = handler.get("command")
     if not isinstance(command, str):
         return False
-    if _HOOK_TOKEN in command:
+    if _PROMPT_HOOK_TOKEN in command:
         return True
     # 迁移本地原型曾使用的绝对 prompt_hook.py 命令；只认完整 tt-sidebar + codex 特征。
     return "tt-sidebar" in command and "prompt_hook.py" in command and "--agent codex" in command
+
+
+def _is_statusline_hook_handler(handler) -> bool:
+    if not isinstance(handler, dict):
+        return False
+    command = handler.get("command")
+    return isinstance(command, str) and any(token in command for token in _STATUSLINE_HOOK_TOKENS)
 
 
 def _read_hooks() -> dict:
@@ -172,7 +189,11 @@ def _read_hooks() -> dict:
     return data
 
 
-def _without_hook(data: dict) -> tuple[dict, bool]:
+def _without_event_handler(
+    data: dict,
+    event: str,
+    is_managed: Callable[[object], bool],
+) -> tuple[dict, bool]:
     result = dict(data)
     hooks = result.get("hooks")
     if hooks is None:
@@ -180,7 +201,7 @@ def _without_hook(data: dict) -> tuple[dict, bool]:
     if not isinstance(hooks, dict):
         raise ValueError(CODEX_HOOKS)
     new_hooks = dict(hooks)
-    groups = new_hooks.get("UserPromptSubmit")
+    groups = new_hooks.get(event)
     if groups is None:
         return result, False
     if not isinstance(groups, list):
@@ -193,7 +214,7 @@ def _without_hook(data: dict) -> tuple[dict, bool]:
             kept_groups.append(group)
             continue
         handlers = group["hooks"]
-        kept_handlers = [handler for handler in handlers if not _is_hook_handler(handler)]
+        kept_handlers = [handler for handler in handlers if not is_managed(handler)]
         if len(kept_handlers) == len(handlers):
             kept_groups.append(group)
             continue
@@ -203,9 +224,9 @@ def _without_hook(data: dict) -> tuple[dict, bool]:
             kept["hooks"] = kept_handlers
             kept_groups.append(kept)
     if kept_groups:
-        new_hooks["UserPromptSubmit"] = kept_groups
+        new_hooks[event] = kept_groups
     else:
-        new_hooks.pop("UserPromptSubmit", None)
+        new_hooks.pop(event, None)
     if new_hooks:
         result["hooks"] = new_hooks
     else:
@@ -213,8 +234,13 @@ def _without_hook(data: dict) -> tuple[dict, bool]:
     return result, removed
 
 
-def _with_hook(data: dict) -> dict:
-    result, _removed = _without_hook(data)
+def _with_event_handler(
+    data: dict,
+    event: str,
+    handler: dict,
+    is_managed: Callable[[object], bool],
+) -> dict:
+    result, _removed = _without_event_handler(data, event, is_managed)
     hooks = result.get("hooks")
     if hooks is None:
         hooks = {}
@@ -222,39 +248,86 @@ def _with_hook(data: dict) -> dict:
         raise ValueError(CODEX_HOOKS)
     else:
         hooks = dict(hooks)
-    groups = hooks.get("UserPromptSubmit")
+    groups = hooks.get(event)
     if groups is None:
         groups = []
     elif not isinstance(groups, list):
         raise ValueError(CODEX_HOOKS)
-    hooks["UserPromptSubmit"] = [*groups, {"hooks": [_hook_handler()]}]
+    hooks[event] = [*groups, {"hooks": [handler]}]
     result["hooks"] = hooks
     return result
 
 
-def hook_needs_sync() -> bool:
+def _without_prompt_hook(data: dict) -> tuple[dict, bool]:
+    return _without_event_handler(data, "UserPromptSubmit", _is_prompt_hook_handler)
+
+
+def _with_prompt_hook(data: dict) -> dict:
+    return _with_event_handler(
+        data,
+        "UserPromptSubmit",
+        _prompt_hook_handler(),
+        _is_prompt_hook_handler,
+    )
+
+
+def _without_statusline_hook(data: dict) -> tuple[dict, bool]:
+    return _without_event_handler(data, "Stop", _is_statusline_hook_handler)
+
+
+def _with_statusline_hook(data: dict, command: str) -> dict:
+    return _with_event_handler(
+        data,
+        "Stop",
+        _statusline_hook_handler(command),
+        _is_statusline_hook_handler,
+    )
+
+
+def _with_managed_hooks(data: dict, statusline_command: str | None) -> dict:
+    result = _with_prompt_hook(data)
+    result, _removed = _without_statusline_hook(result)
+    if statusline_command is not None:
+        result = _with_statusline_hook(result, statusline_command)
+    return result
+
+
+def managed_hooks_need_sync(statusline_command: str | None) -> bool:
+    """两个 Token Tracker Hook 是否需要统一同步到用户级 hooks.json。"""
     try:
         data = _read_hooks()
-        return data != _with_hook(data)
+        return data != _with_managed_hooks(data, statusline_command)
     except ValueError:
-        return False  # 损坏的用户配置只在显式 setup 时提示，自动更新绝不覆盖
+        return False  # 损坏配置只在显式 setup 时提示，自动更新绝不覆盖
 
 
-def install_hook() -> bool:
+def statusline_hook_present() -> bool:
+    """hooks.json 是否含 Token Tracker 的 Stop handler（命令版本是否最新由同步检查负责）。"""
+    try:
+        _updated, removed = _without_statusline_hook(_read_hooks())
+        return removed
+    except ValueError:
+        return False
+
+
+def install_managed_hooks(statusline_command: str | None) -> bool:
+    """原子合并 UserPromptSubmit 与可选 Stop；保留用户其它事件、分组和 handler。"""
     data = _read_hooks()
-    updated = _with_hook(data)
+    updated = _with_managed_hooks(data, statusline_command)
     if updated == data:
         return False
     _write_json_atomic(CODEX_HOOKS, updated)
     return True
 
 
-def uninstall_hook() -> bool:
+def uninstall_managed_hooks() -> bool:
+    """同时移除 Token Tracker 的两个 handler，保留 hooks.json 中全部用户配置。"""
     if not os.path.exists(CODEX_HOOKS):
         return False
     data = _read_hooks()
-    updated, removed = _without_hook(data)
-    if not removed:
+    updated, prompt_removed = _without_prompt_hook(data)
+    updated, statusline_removed = _without_statusline_hook(updated)
+    if not prompt_removed and not statusline_removed:
         return False
     if updated:
         _write_json_atomic(CODEX_HOOKS, updated)

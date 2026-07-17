@@ -74,7 +74,7 @@ Renders 24-bit truecolor, **does not enter the model context** (verified), and *
 
 Run `tt sidebar` in a narrow terminal pane for an all-session overview. In Codex, explicitly invoke `$tt-sidebar` to automatically open a separate right-side pane at one-third width containing only the current session's complete prompt history, newest first.
 
-`tt setup` installs the user-level Skill and a `UserPromptSubmit` hook. Review and trust the Token Tracker hook with `/hooks`; restart Codex if the new Skill does not appear immediately. The hook only attempts a local FIFO write while a matching sidebar is open—there is no transcript polling, prompt persistence, or upload. iTerm2 requires its Python API to be enabled; tmux is also supported. `tt unsetup` removes the managed Skill and hook without overwriting a user-owned skill of the same name.
+`tt setup` installs the user-level Skill and keeps the faux-statusline `Stop` plus sidebar `UserPromptSubmit` hooks together in the user-level `hooks.json`. Review and trust new or changed Token Tracker hooks with `/hooks`; restart Codex if the new Skill does not appear immediately. The prompt hook only attempts a local FIFO write while a matching sidebar is open—there is no transcript polling, prompt persistence, or upload. iTerm2 requires its Python API to be enabled; tmux is also supported. `tt unsetup` removes the managed Skill and hooks without overwriting a user-owned skill of the same name.
 
 ## Reports at a Glance
 
@@ -115,7 +115,7 @@ curl -sSL https://raw.githubusercontent.com/stormzhang/token-tracker/main/instal
 ## Usage
 
 ```bash
-tt setup          # configure status lines and install the Codex $tt-sidebar Skill / prompt hook
+tt setup          # configure status lines and install the Codex $tt-sidebar Skill / hooks
 tt                # last-12-months heatmap + top tri-section overview (= tt daily)
 tt daily          # same (tt with no args enters daily)
 tt status         # last-5h real-time panel

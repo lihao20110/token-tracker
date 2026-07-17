@@ -113,7 +113,7 @@ $tt-sidebar
 ```
 
 - 支持 iTerm2（需在 iTerm2 设置中启用 Python API）与 tmux；原会话窗格保持焦点。
-- `tt setup` 同时安装用户级 `UserPromptSubmit` Hook，用本地 FIFO 把新提示词推给已打开的分屏；无 sidebar 时立即返回，不轮询 transcript、不上传或持久化提示词。
+- `tt setup` 把 Codex 的伪 statusline `Stop` 与 sidebar `UserPromptSubmit` 统一安装到用户级 `hooks.json`；后者用本地 FIFO 把新提示词推给已打开的分屏，无 sidebar 时立即返回，不轮询 transcript、不上传或持久化提示词。
 - Codex 会要求审查非托管 Hook：安装后运行 `/hooks`，信任 Token Tracker 对应项。Skill 未立即出现时重启 Codex。
 - `tt unsetup` 会一并移除 Token Tracker 管理的 Skill 与 Hook；若 `~/.agents/skills/tt-sidebar` 已是用户自己的同名 Skill，安装与卸载都不会覆盖它。
 

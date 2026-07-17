@@ -35,7 +35,7 @@ _TT = config.CONFIG_DIR  # ~/.config/token-tracker
 CLAUDE_SETTINGS = os.path.join(_CLAUDE, "settings.json")  # 改 Claude Code 配置，留 agent 目录
 HOOK_SCRIPT_PATH = os.path.join(_TT, "claude-statusline.py")
 CODEX_DIR = _CODEX
-CODEX_CONFIG = os.path.join(CODEX_DIR, "config.toml")     # 改 Codex 配置，留 agent 目录
+CODEX_CONFIG = os.path.join(CODEX_DIR, "config.toml")     # 仅迁移旧内联 Stop；新 Hook 统一写 hooks.json
 CODEX_STATUSLINE_HOOK_PATH = os.path.join(_TT, "codex-statusline.py")
 STATUS_FILE = config.STATUS_FILE                          # CC statusline 缓存（单一权威定义在 config）
 TERMINAL_MAP_FILE = config.TERMINAL_MAP_FILE              # Codex Stop hook 采集的终端定位映射
@@ -105,7 +105,8 @@ def _installed_codex_statusline_version() -> str | None:
     return None
 
 
-# 卸载时定位 tt 追加的整段 [[hooks.Stop]]——同时认新（codex-statusline）/ 旧（tt-statusline）两种特征码。
+# 迁移 / 卸载时定位 tt 旧版追加的整段 [[hooks.Stop]]——
+# 同时认新（codex-statusline）/ 旧（tt-statusline）两种特征码。
 # command 值兼容三代形态：双引号 basic string（最老）、单引号 literal 裸拼接（0.4.x）、
 # 单引号 literal 内含双引号包裹（现行，防路径空格断词，与 CC 侧 #13/#14 同一治法）
 _CODEX_STATUSLINE_REGEX = re.compile(
@@ -117,54 +118,23 @@ _CODEX_STATUSLINE_REGEX = re.compile(
     r'timeout = \d+\s*'
 )
 
-# tt Stop hook 的 command 值（去掉外层 TOML 引号）；与删除正则同一套三代形态
-_CODEX_COMMAND_REGEX = re.compile(
-    r'command = ("[^"\n]*(?:codex-statusline|tt-statusline)[^"\n]*"'
-    r"|'[^'\n]*(?:codex-statusline|tt-statusline)[^'\n]*')"
-)
-
 
 def _has_tt_codex_statusline(content: str) -> bool:
-    return "codex-statusline" in content or "tt-statusline" in content
+    return _CODEX_STATUSLINE_REGEX.search(content) is not None
 
 
-def _codex_hook_command(content: str) -> str | None:
-    """从 config.toml 内容提取 tt Stop hook 的 command 值（含内层引号、不含外层 TOML 引号）。"""
-    m = _CODEX_COMMAND_REGEX.search(content)
-    return m.group(1)[1:-1] if m else None
-
-
-def _install_codex_statusline(content: str, python: str) -> str:
-    """落盘 Codex statusline 脚本 + 在 config.toml 末尾追加 Stop hook 段。
-    command 与 CC 侧同一拼法（_build_cc_command：双引号包路径 + Windows 正斜杠，#13/#14 同治）。
-    - 已有段的 command 与本次要写的完全一致 → 幂等返回；
-    - 不一致（python 升级/换环境、老名 tt-statusline、旧裸拼接格式）→ 删旧段装新段，
-      避免 command 指向已死 python 或在含空格路径上断词（症状：状态栏静默半残）。"""
-    _write_codex_statusline_script()
-    cmd = _build_cc_command(python, CODEX_STATUSLINE_HOOK_PATH)
-    if _has_tt_codex_statusline(content):
-        if _codex_hook_command(content) == cmd:
-            return content  # 新格式 + python/脚本路径一致 → 幂等
-        content = _CODEX_STATUSLINE_REGEX.sub("\n", content)  # 其余一律删旧装新
-    return content.rstrip() + (
-        "\n\n[[hooks.Stop]]\n\n"
-        "[[hooks.Stop.hooks]]\n"
-        'type = "command"\n'
-        # 用 TOML literal string（单引号）包裹 command，避免 Windows 反斜杠路径被当转义符
-        # 解析失败（如 `C:\Users\...` 里的 `\U` 被识别为 unicode 转义起始）；
-        # 值内的双引号来自 _build_cc_command 的路径包裹，literal string 内原样合法
-        f"command = '{cmd}'\n"
-        "timeout = 10\n"
-    )
+def _migrate_codex_statusline_config(content: str) -> str:
+    """只移除 Token Tracker 的旧内联 Stop 段；[hooks.state] 与用户其它 TOML 原样保留。"""
+    return _CODEX_STATUSLINE_REGEX.sub("\n", content)
 
 
 def _uninstall_codex_statusline(content: str) -> str:
-    """删 Codex statusline 脚本 + 从 content 移除 tt 追加的 Stop hook 段（不动用户其它）。"""
+    """删 Codex statusline 运行产物 + 旧内联 Stop 段（hooks.json 由统一 installer 管理）。"""
     if os.path.exists(CODEX_STATUSLINE_HOOK_PATH):
         os.remove(CODEX_STATUSLINE_HOOK_PATH)
     if os.path.exists(TERMINAL_MAP_FILE):
         os.remove(TERMINAL_MAP_FILE)
-    return _CODEX_STATUSLINE_REGEX.sub("\n", content)
+    return _migrate_codex_statusline_config(content)
 
 
 def _read_codex_config() -> tuple[str, dict] | None:
@@ -176,17 +146,26 @@ def _read_codex_config() -> tuple[str, dict] | None:
         return None
 
 
+def _codex_statusline_command(python: str | None = None) -> str:
+    return _build_cc_command(python or sys.executable or "python3", CODEX_STATUSLINE_HOOK_PATH)
+
+
+def _inline_codex_statusline_present() -> bool:
+    result = _read_codex_config()
+    return bool(result and _has_tt_codex_statusline(result[0]))
+
+
 def codex_statusline_active() -> bool:
-    """双因素：用户意图（config）AND 实际装好（脚本文件 + config.toml 含特征码）。任一不满足 → False。"""
+    """双因素：用户意图 AND 实际装好。
+
+    迁移期兼容旧 config.toml 内联 Stop，让 needs_update() 能无打扰搬到 hooks.json；
+    新安装只认 hooks.json。
+    """
     if config.codex_faux_statusline_intent() is not True:
         return False
     if not os.path.exists(CODEX_STATUSLINE_HOOK_PATH):
         return False
-    try:
-        with open(CODEX_CONFIG, encoding="utf-8") as f:
-            return _has_tt_codex_statusline(f.read())
-    except OSError:
-        return False
+    return sidebar_install.statusline_hook_present() or _inline_codex_statusline_present()
 
 
 def _settings_has_tt_statusline() -> bool:
@@ -354,26 +333,37 @@ def _sync_cc_command() -> None:
         json.dump(settings, f, indent=2, ensure_ascii=False)
 
 
-def _codex_command_needs_sync() -> bool:
-    """config.toml 里 tt Stop hook 的 command 是否还是旧格式（裸拼接 / 反斜杠）——
-    与 CC 侧 #13/#14 同类问题，格式规则复用 _cc_command_outdated。没装 / 没段 → False。"""
-    result = _read_codex_config()
-    if not result:
+def _sync_codex_managed_hooks(quiet: bool = False) -> bool:
+    """把 Stop + UserPromptSubmit 统一同步到 hooks.json，再迁移旧内联 Stop。
+
+    先写 hooks.json、成功后才移除 config.toml 旧段，避免迁移中断导致伪 statusline 失效。
+    """
+    p = (lambda *a, **k: None) if quiet else get_console().print
+    statusline_command = (
+        _codex_statusline_command()
+        if config.codex_faux_statusline_intent() is True
+        else None
+    )
+    try:
+        changed = sidebar_install.install_managed_hooks(statusline_command)
+    except ValueError:
+        get_console().print(
+            f"[red]{t('codex_hooks_corrupt', path=sidebar_install.CODEX_HOOKS)}[/red]"
+        )
         return False
-    cmd = _codex_hook_command(result[0])
-    return cmd is not None and _cc_command_outdated(cmd)
 
-
-def _sync_codex_command() -> None:
-    """把 config.toml 里 tt Stop hook 的 command 重写为新格式（删旧段装新段，其余内容不动）。"""
     result = _read_codex_config()
-    if not result:
-        return
-    content = result[0]
-    new_content = _install_codex_statusline(content, sys.executable or "python3")
-    if new_content != content:
-        with open(CODEX_CONFIG, "w", encoding="utf-8") as f:
-            f.write(new_content)
+    if result:
+        content, _parsed = result
+        migrated = _migrate_codex_statusline_config(content)
+        if migrated != content:
+            with open(CODEX_CONFIG, "w", encoding="utf-8") as f:
+                f.write(migrated)
+            changed = True
+    if changed:
+        p(f"[green]✓[/green] {t('codex_hooks_synced')}")
+        p(f"[dim]{t('sidebar_hook_trust')}[/dim]")
+    return True
 
 
 def needs_update() -> bool:
@@ -383,16 +373,20 @@ def needs_update() -> bool:
     sv = _installed_codex_statusline_version()
     if sv is not None and sv != STATUSLINE_HOOK_VERSION:
         return True
-    if _codex_command_needs_sync():  # config.toml 里 Stop hook command 旧格式（同 #13/#14）
-        return True
     # setup_version 3 起，用户级 $tt-sidebar Skill 与 UserPromptSubmit hook 也属于 setup 产物。
     # 老用户（setup_version < 3）由 cli 的升级引导统一安装，不在这里抢跑。
-    if (
-        os.path.isdir(CODEX_DIR)
-        and config.setup_version() >= 3
-        and (sidebar_install.skill_needs_sync() or sidebar_install.hook_needs_sync())
-    ):
-        return True
+    if os.path.isdir(CODEX_DIR) and config.setup_version() >= 3:
+        statusline_command = (
+            _codex_statusline_command()
+            if config.codex_faux_statusline_intent() is True
+            else None
+        )
+        if (
+            sidebar_install.skill_needs_sync()
+            or sidebar_install.managed_hooks_need_sync(statusline_command)
+            or _inline_codex_statusline_present()
+        ):
+            return True
     return _cc_command_needs_sync()  # settings.json 里 command 格式过时也算待更新（issue #13/#14）
 
 
@@ -403,9 +397,8 @@ def update_hook() -> None:
         _write_codex_statusline_script()
     if _cc_command_needs_sync():
         _sync_cc_command()
-    if _codex_command_needs_sync():
-        _sync_codex_command()
     if os.path.isdir(CODEX_DIR) and config.setup_version() >= 3:
+        _sync_codex_managed_hooks(quiet=True)
         _setup_codex_sidebar(quiet=True)
 
 
@@ -551,28 +544,23 @@ def _setup_claude(components: SetupComponents, quiet: bool = False) -> None:
 
 
 def _setup_codex(components: SetupComponents, quiet: bool = False) -> None:
-    """Codex 端只装/卸伪 statusline hook，**不再动 [tui].status_line**——伪 statusline 比官方更全。
-    用户意图（components.codex_faux_statusline）也写入 config.json，给 wizard 总结 / is_setup 用。"""
+    """Codex 端同步用户级 hooks.json，**不再动 [tui].status_line**。
+
+    Stop（可选伪 statusline）与 UserPromptSubmit（sidebar）由同一个 installer 原子合并；
+    旧 config.toml 内联 Stop 在 JSON 成功落盘后迁移，[hooks.state] 原样保留。
+    """
     p = (lambda *a, **k: None) if quiet else get_console().print
-    result = _read_codex_config()
-    if result:
-        content, _parsed = result
-    elif os.path.isdir(CODEX_DIR):
-        content = ""  # 装了 Codex 但还没 config.toml → 新建
-    else:
+    if not os.path.isdir(CODEX_DIR):
         return
 
     config.save_codex_faux_statusline(components.codex_faux_statusline)  # 写入意图
 
-    python = sys.executable or "python3"
     if components.codex_faux_statusline:
-        content = _install_codex_statusline(content, python)
+        _write_codex_statusline_script()
     else:
-        content = _uninstall_codex_statusline(content)
+        _uninstall_codex_statusline("")
 
-    with open(CODEX_CONFIG, "w", encoding="utf-8") as f:
-        f.write(content)
-
+    _sync_codex_managed_hooks(quiet=quiet)
     p(f"[green]✓[/green] {t('codex_configured')}")
     if components.codex_faux_statusline:
         p(f"[dim]{t('codex_statusline_hint')}[/dim]")
@@ -580,7 +568,7 @@ def _setup_codex(components: SetupComponents, quiet: bool = False) -> None:
 
 
 def _setup_codex_sidebar(quiet: bool = False) -> None:
-    """安装用户级 $tt-sidebar Skill 与当前会话提示词 FIFO hook，不改变普通 tt sidebar。"""
+    """安装用户级 $tt-sidebar Skill；两个 Codex Hook 已由 _setup_codex 统一同步。"""
     p = (lambda *a, **k: None) if quiet else get_console().print
     try:
         skill_changed = sidebar_install.install_skill()
@@ -594,17 +582,6 @@ def _setup_codex_sidebar(quiet: bool = False) -> None:
             f"[green]✓[/green] "
             f"{t('sidebar_skill_installed', path=sidebar_install.SIDEBAR_SKILL_DIR)}"
         )
-
-    try:
-        hook_changed = sidebar_install.install_hook()
-    except ValueError:
-        get_console().print(
-            f"[red]{t('codex_hooks_corrupt', path=sidebar_install.CODEX_HOOKS)}[/red]"
-        )
-        hook_changed = False
-    if hook_changed:
-        p(f"[green]✓[/green] {t('sidebar_hook_installed')}")
-        p(f"[dim]{t('sidebar_hook_trust')}[/dim]")
 
 
 # --- unsetup ---
@@ -649,12 +626,12 @@ def _unsetup_codex() -> None:
     """卸载 Codex 端：移除伪 statusline hook + 脚本。
     老用户残留：如有 codex-backup.json（旧版我们改过 status_line），恢复原值；新版不再动 status_line。"""
     result = _read_codex_config()
+    content = result[0] if result else ""
+
+    # config.toml 不存在 / 损坏也必须先清运行产物；hooks.json 由 _unsetup_codex_sidebar 统一清。
+    content = _uninstall_codex_statusline(content)
     if not result:
         return
-    content, _parsed = result
-
-    # 清伪 statusline（脚本 + hook 段）
-    content = _uninstall_codex_statusline(content)
 
     # 兼容老用户：旧版我们曾接管 status_line + 写 codex-backup.json。这里恢复 + 删 backup。
     if os.path.exists(CODEX_BACKUP_LEGACY):
@@ -682,11 +659,11 @@ def _unsetup_codex_sidebar() -> None:
             f"[green]✓[/green] {t('deleted_file', path=sidebar_install.SIDEBAR_SKILL_DIR)}"
         )
     try:
-        hook_removed = sidebar_install.uninstall_hook()
+        hook_removed = sidebar_install.uninstall_managed_hooks()
     except ValueError:
         get_console().print(
             f"[red]{t('codex_hooks_corrupt_unsetup', path=sidebar_install.CODEX_HOOKS)}[/red]"
         )
         return
     if hook_removed:
-        get_console().print(f"[green]✓[/green] {t('sidebar_hook_removed')}")
+        get_console().print(f"[green]✓[/green] {t('codex_hooks_removed')}")
