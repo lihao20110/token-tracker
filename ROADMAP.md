@@ -5,13 +5,13 @@
 
 ## 当前阶段
 
-**0.4.9 发布候选已完成验证（待 PyPI 上传）**：Codex `$tt-sidebar` 的 launcher / 当前会话渲染 / prompt hook / iTerm2 worker 已进入 `src/token_tracker/`，Skill 模板进入包资源；`tt setup` 把它安装到 Codex 官方用户级目录 `$HOME/.agents/skills/tt-sidebar`。Codex 用户配置层的伪 statusline `Stop` 与 sidebar `UserPromptSubmit` 现统一由一个 installer 原子合并到 `~/.codex/hooks.json`，不再由 `config.toml` / `hooks.json` 分裂存储；升级只移除 Token Tracker 自己的旧 `[[hooks.Stop]]`，完整保留 `[hooks.state]`、用户其它 TOML、其它事件 / 分组 / handler，且 JSON 损坏时先保留旧 Stop。两个 Hook 命令都使用当前安装版绝对 Python，sidebar 正式调用包内 `-m token_tracker.sidebar_command`，不再依赖项目路径、项目 `.venv`、`uv run` 或 Hook 子进程 PATH；`SETUP_VERSION` 升到 3，让存量用户升级后重走 setup。非托管 hook 仍遵守 Codex 安全边界，来源迁移或命令变化后需在 `/hooks` 检查并信任；同名非 tt Skill 和损坏的 hooks JSON 均不覆盖。普通 `tt sidebar` 的全部会话总览及 CLI 参数保持不变，仍不新增 `--current` / `--split`。
+**`0.4.9` 已发布 PyPI（源码与 tag 未 push）**：Codex `$tt-sidebar` 的 launcher / 当前会话渲染 / prompt hook / iTerm2 worker 已进入 `src/token_tracker/`，Skill 模板进入包资源；`tt setup` 把它安装到 Codex 官方用户级目录 `$HOME/.agents/skills/tt-sidebar`。Codex 用户配置层的伪 statusline `Stop` 与 sidebar `UserPromptSubmit` 现统一由一个 installer 原子合并到 `~/.codex/hooks.json`，不再由 `config.toml` / `hooks.json` 分裂存储；升级只移除 Token Tracker 自己的旧 `[[hooks.Stop]]`，完整保留 `[hooks.state]`、用户其它 TOML、其它事件 / 分组 / handler，且 JSON 损坏时先保留旧 Stop。两个 Hook 命令都使用当前安装版绝对 Python，sidebar 正式调用包内 `-m token_tracker.sidebar_command`，不再依赖项目路径、项目 `.venv`、`uv run` 或 Hook 子进程 PATH；`SETUP_VERSION` 升到 3，让存量用户升级后重走 setup。非托管 hook 仍遵守 Codex 安全边界，来源迁移或命令变化后需在 `/hooks` 检查并信任；同名非 tt Skill 和损坏的 hooks JSON 均不覆盖。普通 `tt sidebar` 的全部会话总览及 CLI 参数保持不变，仍不新增 `--current` / `--split`。
 
 自动分屏在发起命令的 iTerm2 / tmux 会话右侧创建 1/3 宽度窗格，按 `CODEX_THREAD_ID` 精确过滤当前会话并保持原窗格焦点。split 首帧只扫描一次完整历史，随后仅阻塞等待 `config.CONFIG_DIR` 下会话 FIFO；不启动 transcript watcher、单文件 stat/tail、全目录轮询或 0.5 秒动画 timer。iTerm2 pane 继续在 transaction 外创建，随后用短 transaction 提交 2:1 layout、窗口几何恢复和原 pane 焦点；custom command 用 `COLUMNS` 静默宽度门控，避免临时 shell 与半宽首帧，各阶段独立超时、失败关闭本次 pane。
 
 分屏编号、字体与复制规范：提示词按时间正序稳定编号（最早为 1、最新为 N，倒序视图顶部显示 N，位宽按 N 右对齐，新增提示词不改旧编号）；全部序号、正文、`├ / │ / └` 树线和间隔连接均使用终端正常前景强度，不使用 dim；最新提示词使用当前主题的 `overlay0` 背景，背景从序号列开始，左侧两格树前缀保持终端底色，右侧固定留 1 格终端底色。鼠标跨行选择逐行排除树线、序号和悬挂缩进，只高亮并复制正文；跨提示词的连接行在剪贴板中保留为空行。
 
-`0.4.9` 发布候选已构建（2026-07-19）：包含发行版 Codex `$tt-sidebar`、用户级 `Stop` / `UserPromptSubmit` Hook 统一管理、旧 `config.toml` Stop 安全迁移，以及 sidebar Hook 从项目 `.venv` 切换到安装版解释器。版本文件、完整测试、静态检查、类型检查、sdist / wheel 内容和隔离安装入口均已验证；按主人要求，本次发布不 push 源码或 tag。
+`0.4.9` 已发布 PyPI（2026-07-19，https://pypi.org/project/token-tracker/0.4.9/ ），发布 commit `9ed3668` + 本地 `v0.4.9` tag；包含发行版 Codex `$tt-sidebar`、用户级 `Stop` / `UserPromptSubmit` Hook 统一管理、旧 `config.toml` Stop 安全迁移，以及 sidebar Hook 从项目 `.venv` 切换到安装版解释器。版本文件、完整测试、静态检查、类型检查、sdist / wheel 内容和隔离安装入口均已验证；PyPI 两个文件的 SHA-256 与本地产物一致，独立缓存从远端安装后 `tt --version` 正确输出 0.4.9。按主人要求，本次未 push 源码或 tag。
 
 **`tt sidebar` v1 已随 0.4.8 发版（2026-07-15，`feature/watch-sidebar`）**：live 面板已支持鼠标拖拽选择、松手自动复制（拖拽期间暂停动态刷新）；同批完成代码体检整改：① `hours_back` 报表先按 JSONL mtime 安全预过滤，实测 Claude 25h 扫描约 **1.95s → 0.21s**、Codex **0.20s → 0.004s**；② sidebar 解析缓存 key 纳入 `max_prompts`，两个高复杂度解析器拆为状态对象 + 事件处理函数；③ `cli.main()` 拆出预检、Agent 选择、报表与 sessions helper，复杂度检查转绿；④ 周/月跨 Agent 合并与周期计算收口 `ui/report_stats.py`，解除 heatmap 对 tables 私有函数的依赖；⑤ 修复 `NO_COLOR` 测试隔离、sessions 正整数校验、定价缓存结构校验与文档口径。自动 1/3 分屏的 `$tt-sidebar` / `/tt-sidebar` launcher 仍是 git ignore 下的本地快捷能力，不随 PyPI 包安装。pytest **230 全绿**、ruff 全过、mypy 33 个源文件 0 报错。
 
@@ -108,7 +108,7 @@
 
 ## 待办 / 计划
 
-- **`feature/watch-sidebar` 后续收口**：0.4.8 已从当前分支发布 PyPI；按主人要求源码与 tag 未 push。后续是否合并分支、推送源码与 tag 单独决定，不与本次发布绑定。
+- **`feature/watch-sidebar` 后续收口**：0.4.9 已从当前分支发布 PyPI；按主人要求源码与 tag 未 push。后续是否合并分支、推送源码与 tag 单独决定，不与本次发布绑定。
 - **自动 1/3 分屏跟随原会话退出（独立后续，未实现）**：不监听 `/quit` 文本，改由 `$tt-sidebar` launcher 沿父进程树定位原生 Codex PID 并传给 split；macOS 用 `kqueue` `EVFILT_PROC + NOTE_EXIT`、Linux 用 `pidfd` 阻塞等待真实进程退出，收到事件后退出 Textual 并关闭配对 pane。该路径应覆盖 `/quit`、`/exit`、崩溃和原 pane 关闭，不增加 transcript / SQLite 监听或周期 timer；iTerm2 `jobName` 变量监听只作终端专属备用，shell wrapper 需改变启动方式，均不作为主实现。Claude Code 继续优先使用官方 `SessionEnd`，强杀再走同类进程兜底。
 - **GitHub issue / PR 状态重新核对**：本地确认 #16 / #17 / #19 对应功能已经落地；外部 open/closed 状态在实际处理前重新查询，不沿用 2026-07-04 的旧快照。
 - **Sonnet 5 导入价切换**：2026-09-01 起内置价从 $2/$10 切到 $3/$15；届时先确认 litellm 在线表是否已接管。
@@ -124,11 +124,11 @@
 
 ## 阻塞
 
-- 无技术阻塞。合并与 Git push 仍需主人单独确认；0.4.8 源码与 tag 当前仅保留本地。
+- 无技术阻塞。合并与 Git push 仍需主人单独确认；0.4.9 源码与 tag 当前仅保留本地。
 
 ## 最近验证
 
-- **2026-07-19 07:38**：**版本升至 0.4.9 并完成本地发布验收，待 PyPI 上传**。发布基线为 `df698d2`：Codex `$tt-sidebar` 正式进入发行包，用户级 `Stop` 与 `UserPromptSubmit` 统一写入 `hooks.json`，旧 `config.toml` Stop 安全迁移，两个 Hook 均改用安装版解释器。`pyproject.toml` / `uv.lock` 已同步 0.4.9；完整 pytest **252 全绿**、Ruff 全过、mypy 38 个源文件 0 报错，`uv lock --check` 与 `git diff --check` 通过；sdist / wheel 构建成功并确认包含 sidebar installer、launcher、Skill 与 agent metadata，隔离安装 wheel 后 `tt --version` 正确输出 0.4.9。构建仅有 setuptools 许可证格式弃用警告，不影响产物。
+- **2026-07-19 07:42**：**版本升至 0.4.9 并完成 PyPI 发布，源码未 push**。发布基线为 `df698d2`，发布 commit 为 `9ed3668`，本地创建 `v0.4.9` tag：Codex `$tt-sidebar` 正式进入发行包，用户级 `Stop` 与 `UserPromptSubmit` 统一写入 `hooks.json`，旧 `config.toml` Stop 安全迁移，两个 Hook 均改用安装版解释器。`pyproject.toml` / `uv.lock` 已同步 0.4.9；完整 pytest **252 全绿**、Ruff 全过、mypy 38 个源文件 0 报错，`uv lock --check`、Twine check 与 `git diff --check` 通过；sdist / wheel 构建成功并确认包含 sidebar installer、launcher、Skill 与 agent metadata。PyPI JSON 与页面回验通过，远端两个文件的 SHA-256 与本地产物一致；独立缓存从 PyPI 安装后 `tt --version` 正确输出 0.4.9。构建仅有 setuptools 许可证格式弃用警告，不影响产物；按主人明确要求，未执行任何 `git push`。
 - **2026-07-17 09:17**：**Codex 用户级 Hook 配置统一到 `hooks.json`，根治同层双表示警告，尚未发版 / push**。按官方 Hooks 规则把可选伪 statusline `Stop` 与固定 sidebar `UserPromptSubmit` 收口到 `sidebar_install.py` 一次原子合并；升级先成功写 JSON、再只删除 `config.toml` 中 Token Tracker 自己的旧 `[[hooks.Stop]]`，完整保留 `[hooks.state]`、用户其它 TOML、其它事件 / 分组 / 同组 handler，损坏 JSON 时保留旧 Stop 不让功能消失。两个 Hook 均使用当前安装版 `sys.executable`；sidebar 继续正式调用包内 `-m token_tracker.sidebar_command`，环境变化由 `needs_update()` 重写，不依赖项目脚本路径或 Hook 子进程 PATH。新增双事件合并 / 幂等 / opt-out / 卸载保留用户项、信任状态保留、旧 `.venv` 命令迁移、Windows JSON 路径、损坏 JSON 回滚保护等回归。完整 pytest **252 全绿**、Ruff 全过、mypy 38 个源文件 0 报错，`git diff --check` 通过；sdist / wheel 构建成功并确认包含 sidebar installer、launcher、Skill 与 agent metadata。未修改真实 `~/.codex` 配置，未 tag / push / PyPI 发布。
 - **2026-07-15 20:34**：**把 Codex `$tt-sidebar` 从 git-ignore 本地原型迁入可发行包，尚未发版 / push**。新增 `sidebar_install.py`（用户级 Skill + `~/.codex/hooks.json` 安装、升级、保守合并与卸载）、`sidebar_command.py`（split / current / prompt-hook）与包内 iTerm2 worker；Skill 资源随 wheel 分发，`tt setup` 安装到官方 `$HOME/.agents/skills/tt-sidebar`，`SETUP_VERSION` 升 3，普通 `tt sidebar` 不变。launcher 全链复用安装包绝对 Python，不再硬编码主人项目与 `.venv`；首扫只读 Codex 当前会话，后续仍为 FIFO-only。新增 macOS 条件依赖 `iterm2`，官方 Skill validator 通过；隔离 HOME 实跑 setup 后 Skill / Hook 幂等检查均为 False（无需同步）；sdist / wheel 构建成功并确认包含 Skill、launcher、installer、worker 与依赖 marker。完整 pytest **251 全绿**、Ruff 全过、mypy 38 个源文件 0 报错，`git diff --check` 通过。当前没有修改 0.4.8 已发布产物，也没有 tag / push / PyPI 发布。
 - **2026-07-15 16:44**：**版本升至 0.4.8 并完成本地构建 / PyPI 发布，源码未 push**。发布基线功能截止 `9880203`：`tt sidebar` v1、扫描与结构整改、CC statusline PR #20；`pyproject.toml` / `uv.lock` 版本同步为 0.4.8，本地创建 `v0.4.8` tag。完整 pytest **230 全绿**、Ruff 全过、mypy 33 个源文件 0 报错，sdist / wheel 元数据与内容检查通过；PyPI 0.4.8 JSON 与安装包下载回验通过。按主人明确要求，未执行任何 `git push`，自动 1/3 分屏本地 launcher 也未打入 PyPI 包。
