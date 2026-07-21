@@ -10,6 +10,7 @@ import pytest
 from rich.console import Console
 
 from token_tracker import sidebar
+from token_tracker.i18n import t
 from token_tracker.sidebar import (
     ATTENTION,
     IDLE,
@@ -788,7 +789,8 @@ def test_split_sidebar_empty_waits_for_first_prompt():
     console = Console(record=True, width=40)
     console.print(render_split_sidebar([]))
 
-    assert console.export_text().strip() == "等待当前会话的第一条提示词…"
+    actual = " ".join(console.export_text().split())
+    assert actual == " ".join(t("sidebar_waiting_prompt").split())
 
 
 def test_split_sidebar_latest_highlight_excludes_tree_and_leaves_one_right_cell():
@@ -900,7 +902,8 @@ def test_render_header_count_and_compact_clock_line():
     console.print(render_sidebar(sessions))
     out = console.export_text().splitlines()
     assert "3" in out[0]  # 活跃会话计数在标题行
-    clock_lines = [ln for ln in out if all(label in ln for label in ("北京", "洛杉矶", "伦敦"))]
+    labels = (t("sidebar_tz_bj"), t("sidebar_tz_la"), t("sidebar_tz_ldn"))
+    clock_lines = [ln for ln in out if all(label in ln for label in labels)]
     assert len(clock_lines) == 1
     clock_line = clock_lines[0]
     assert len(_re.findall(r"\d{2}:\d{2}", clock_line)) == 3
