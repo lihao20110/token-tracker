@@ -10,6 +10,7 @@ CODEX_DIR = codex_home()
 SESSIONS_DIR = os.path.join(CODEX_DIR, "sessions")
 STATE_DB = os.path.join(CODEX_DIR, "state_5.sqlite")
 _RATE_LIMIT_SCAN_FILES = 5  # 只扫最近改动的 N 个 session 文件找限额信息
+_STANDARD_RATE_LIMIT_ID = "codex"
 
 # Codex 内部虚拟 model 改写到背后真实 model，避免它们在 Model Trend / sessions 等报表里独占行；
 # 同时让 cost 走真实 model 的精确定价（cost.py 的 codex- 系列兜底是双保险）。
@@ -74,11 +75,12 @@ def load_rate_limits() -> RateLimits | None:
     jsonl_files = sorted(sessions_path.rglob("*.jsonl"), key=_safe_mtime, reverse=True)
     models = _load_thread_models()
 
+    latest_snapshot: tuple[float, RateLimits] | None = None
     for path in jsonl_files[:_RATE_LIMIT_SCAN_FILES]:
-        rl = _extract_rate_limits(path, models)
-        if rl:
-            return rl
-    return None
+        snapshot = _extract_rate_limits_snapshot(path, models)
+        if snapshot and (latest_snapshot is None or snapshot[0] > latest_snapshot[0]):
+            latest_snapshot = snapshot
+    return latest_snapshot[1] if latest_snapshot else None
 
 
 def _safe_mtime(path: Path) -> float:
@@ -89,6 +91,11 @@ def _safe_mtime(path: Path) -> float:
 
 
 def _extract_rate_limits(path: Path, models: dict[str, str]) -> RateLimits | None:
+    snapshot = _extract_rate_limits_snapshot(path, models)
+    return snapshot[1] if snapshot else None
+
+
+def _extract_rate_limits_snapshot(path: Path, models: dict[str, str]) -> tuple[float, RateLimits] | None:
     session_id = ""
     last_payload = None
     for data in iter_jsonl_dicts(path):
@@ -100,13 +107,17 @@ def _extract_rate_limits(path: Path, models: dict[str, str]) -> RateLimits | Non
         if payload.get("type") != "token_count":
             continue
         rl = payload.get("rate_limits")
-        if rl:
-            last_payload = (rl, payload.get("info") or {}, session_id)
+        # Spark 等独立池不是账号总 weekly limit，不能覆盖标准 codex 配额。
+        if not rl or rl.get("limit_id") != _STANDARD_RATE_LIMIT_ID:
+            continue
+        event_ts = _parse_event_timestamp(data.get("timestamp"))
+        if last_payload is None or event_ts >= last_payload[0]:
+            last_payload = (event_ts, rl, payload.get("info") or {}, session_id)
 
     if not last_payload:
         return None
 
-    rl, info, sid = last_payload
+    event_ts, rl, info, sid = last_payload
 
     now_ts = datetime.now(UTC).timestamp()
     five_pct = five_reset = None
@@ -128,15 +139,27 @@ def _extract_rate_limits(path: Path, models: dict[str, str]) -> RateLimits | Non
     if five_pct is None and seven_pct is None:
         return None
 
-    return RateLimits(
-        five_hour_pct=five_pct,
-        five_hour_resets_at=five_reset,
-        seven_day_pct=seven_pct,
-        seven_day_resets_at=seven_reset,
-        model=models.get(sid, ""),
-        plan_type=rl.get("plan_type") or "",
-        context_window=info.get("model_context_window"),
+    return (
+        event_ts,
+        RateLimits(
+            five_hour_pct=five_pct,
+            five_hour_resets_at=five_reset,
+            seven_day_pct=seven_pct,
+            seven_day_resets_at=seven_reset,
+            model=models.get(sid, ""),
+            plan_type=rl.get("plan_type") or "",
+            context_window=info.get("model_context_window"),
+        ),
     )
+
+
+def _parse_event_timestamp(value: object) -> float:
+    if not isinstance(value, str):
+        return 0.0
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
 
 
 def _parse_jsonl(
