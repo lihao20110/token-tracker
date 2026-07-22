@@ -11,6 +11,14 @@ def test_skill_render_uses_installed_python(monkeypatch):
     assert "__TT_SIDEBAR_COMMAND__" not in rendered
     assert '"/opt/tt env/bin/python" -B -m token_tracker.sidebar_command split' in rendered
     assert sidebar_install._SKILL_MARKER in rendered
+    assert "ITERM_SESSION_ID" in rendered
+    assert "TMUX_PANE" in rendered
+    assert "sandbox_permissions" in rendered
+    assert "require_escalated" in rendered
+    assert "justification" in rendered
+    assert "prefix_rule" in rendered
+    assert "never approve Python generally" in rendered
+    assert "Do not first try the iTerm2 launcher inside the sandbox" in rendered
 
 
 def test_skill_install_update_uninstall_roundtrip(tmp_path, monkeypatch):

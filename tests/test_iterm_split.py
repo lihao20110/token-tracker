@@ -77,6 +77,24 @@ def test_run_split_explains_automation_denial(monkeypatch):
     assert "iTerm2" in message
 
 
+def test_run_split_explains_sandbox_dictionary_denial(monkeypatch):
+    completed = subprocess.CompletedProcess(
+        ["osascript"],
+        1,
+        "",
+        "execution error: Expected end of line but found identifier. (-2741)\n",
+    )
+    monkeypatch.setattr(iterm_split.sys, "platform", "darwin")
+    monkeypatch.setattr(iterm_split.subprocess, "run", MagicMock(return_value=completed))
+
+    ok, message = iterm_split._run_split("session-uuid", "exec sidebar")
+
+    assert not ok
+    assert "Codex 沙箱" in message
+    assert "$tt-sidebar" in message
+    assert "沙箱外" in message
+
+
 def test_run_split_explains_missing_source_and_rolls_back_marker(monkeypatch):
     completed = subprocess.CompletedProcess(
         ["osascript"],

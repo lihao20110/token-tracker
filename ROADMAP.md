@@ -5,6 +5,8 @@
 
 ## 当前阶段
 
+**Codex `$tt-sidebar` iTerm2 沙箱授权修复完成（2026-07-22 09:40，尚未 push / 发版）**：同一份 0.4.10 AppleScript 在 Codex 普通沙箱内因 iTerm2 术语字典不可见而误报 `-2741`，沙箱外纯编译成功，确认不是脚本语法或 macOS Automation 授权问题。发行 Skill 现要求 iTerm2 路径直接以 `sandbox_permissions=require_escalated` 执行 launcher，可记忆授权仅限定完整 launcher 命令、不得放宽到 Python 通用前缀；tmux 继续普通权限。launcher 收到 `-2741` 时改为明确提示允许 `$tt-sidebar` 在沙箱外运行，README 补齐首次 Codex 沙箱确认 + macOS 自动化确认的双授权口径。Skill 官方 validator 通过；定向 **17** 个测试、完整 pytest **258 全绿**，Ruff 全过、mypy 38 个源文件 0 报错、`git diff --check` 通过。
+
 **GitHub Actions 英文环境测试修复完成（2026-07-21 10:09）**：sidebar 的空态文案与三地时钟测试不再写死中文，改为按当前 i18n 语言取预期值；空态断言同时归一化 Rich 在窄宽度下产生的自然换行。由此中文本机与英文 GitHub Runner 使用同一套行为断言，Python 3.11 / 3.12 不再因语言环境不同同时失败。英文隔离环境完整 pytest **257 全绿**，中文 / 英文定向用例均通过，Ruff 全过、mypy 38 个源文件 0 报错。
 
 **Codex weekly limit 串窗修复已完成（2026-07-21 06:10，已 push、尚未发版）**：Codex 配额读取只接受账号标准 `codex` 池，忽略 `codex_bengalfox`（`GPT-5.3-Codex-Spark`）等独立额度；最近 5 个会话不再按文件 mtime 命中即返回，而是比较标准 `token_count` 的事件时间，选出账号最新 weekly 数据。由此 Spark 会话不会把 0% 的独立额度带到其它项目，最近写入但标准数据较旧的会话也不会覆盖更新的总额度。新增 Spark 覆盖、Spark-only 和跨会话事件时间选择 3 个回归；本机真实会话读到标准 weekly **76%**。完整 pytest **257 全绿**、Ruff 全过、mypy 38 个源文件 0 报错、`git diff --check` 通过。
@@ -133,6 +135,7 @@
 
 ## 最近验证
 
+- **2026-07-22 09:40**：**根治 `$tt-sidebar` 在 Codex 沙箱内误报 AppleScript `-2741`**。用已安装 0.4.10 的原始静态脚本对照验证：普通沙箱编译返回 `Expected end of line... (-2741)`，同时出现系统脚本服务连接被阻断；同一脚本以沙箱外权限纯编译返回 0。修复发行 Skill 的执行权限约束，并为 `-2741` 增加沙箱字典不可见的可操作提示；tmux 权限不变，README 同步首次双授权流程。Skill 官方 validator 通过；定向 **17** 个测试、完整 pytest **258 全绿**，Ruff 全过、mypy 38 个源文件 0 报错、`git diff --check` 通过。未修改真实用户 Skill；项目级旧原型分屏已单独真机执行成功，尚未 push / 发版。
 - **2026-07-21 10:09**：**修复 GitHub Actions 在英文 Runner 上稳定失败的两个 sidebar 用例**。CI 日志确认 Python 3.11 / 3.12 同因失败：产品正确输出英文，但测试写死中文空态和时区名称；0.4.10 的前两次 push 也已失败，和本次 weekly limit 改动无关。测试现通过 i18n 获取当前语言预期，空态文案对窄栏自动换行做空白归一化。中文 / 英文两个定向用例各自通过；允许 `ps` 进程探活的英文隔离环境完整 pytest **257 全绿**，Ruff 全过、mypy 38 个源文件 0 报错。
 - **2026-07-21 06:10**：**Codex 状态栏只显示账号标准 weekly limit，Spark 独立池不再串入其它窗口**。本机真实 rollout 复现同一 `gpt-5.6-sol max` 会话从标准 `codex` 池切换到 `codex_bengalfox` 后，旧实现会因最近文件优先而显示 Spark 0%；现改为过滤独立池，并在最近会话间按标准配额事件时间取最新值。真实数据回验返回 weekly **76%**；新增 3 个回归，完整 pytest **257 全绿**、Ruff 全过、mypy 38 个源文件 0 报错、`git diff --check` 通过。随后已 commit / push，尚未发版。
 - **2026-07-20 06:24**：**版本升至 0.4.10 并完成 GitHub / PyPI 发布与远端回验**。`feature/watch-sidebar` 基于最新 `origin/main` 安全 fast-forward 到本地 `main`；发布 commit `647e32c` 与 annotated tag `v0.4.10` 均已 push。`pyproject.toml` / `uv.lock` 同步 0.4.10；完整 pytest **254 全绿**、Ruff 全过、mypy 38 个源文件 0 报错，`uv lock --check` 与 `git diff --check` 通过。由 tag 对应干净提交构建 sdist / wheel，Twine check 全过；wheel 包含 `iterm_split.py`、sidebar launcher / installer / events、Skill 与 agent metadata，发行元数据只保留 `rich` / `questionary` / `textual` 三个运行时依赖。PyPI JSON 与 Simple 索引均已传播，远端 wheel SHA-256 `774fd82c…8758`、sdist SHA-256 `88d7d08a…9c86` 与本地产物完全一致；无缓存独立环境从 PyPI 安装后 `tt --version` 正确输出 0.4.10，安装依赖也没有 `iterm2` / `protobuf` / `websockets`。构建仅有既有 setuptools license 弃用警告，不影响产物。

@@ -158,6 +158,11 @@ def _failure_message(output: str) -> str:
             "iTerm2 分屏失败：macOS 未授权自动化控制。请在“系统设置 → 隐私与安全性 → 自动化”"
             "中允许运行 tt 的应用控制 iTerm2。"
         )
+    if "-2741" in output or "expected end of line but found identifier" in lowered:
+        return (
+            "iTerm2 分屏失败：Codex 沙箱无法读取 iTerm2 的 AppleScript 术语字典。"
+            "请允许 $tt-sidebar 在沙箱外运行后重试。"
+        )
     if "-10814" in output or "application isn’t running" in lowered:
         return "iTerm2 分屏失败：无法连接 iTerm2；请确认 iTerm2 已安装并正在运行。"
 
