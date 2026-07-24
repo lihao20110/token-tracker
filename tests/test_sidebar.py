@@ -558,7 +558,9 @@ def test_render_prompt_wraps_two_lines_with_ellipsis():
     sessions = [LiveSession(agent_id="claude-code", session_id="s1", project="proj",
                             last_activity=now, state=WAITING,
                             prompts=[Prompt(long_prompt, now)])]
-    console = Console(record=True, width=40, force_terminal=True)
+    # height 必须显式给：TERM=dumb 的环境（CI / 非交互 shell）里 Rich 的 size 走
+    # is_dumb_terminal 分支、忽略 width 参数回退 80 列；宽高都给才命中 _width/_height 快路径
+    console = Console(record=True, width=40, height=25, force_terminal=True)
     console.print(render_sidebar(sessions))
     out_lines = console.export_text().splitlines()
     body_lines = [ln for ln in out_lines if "提示词" in ln or "非常长" in ln]
@@ -847,7 +849,8 @@ def test_render_hint_wraps_to_three_lines_then_ellipsis():
                             last_activity=now, state=WAITING,
                             prompts=[Prompt("短", now)],
                             next_hint=f"第一行建议\n{long_line}\n1. 选项甲")]
-    console = Console(record=True, width=40, force_terminal=True)
+    # 同上：显式 height，避免 TERM=dumb 环境下 Rich 忽略 width 回退 80 列
+    console = Console(record=True, width=40, height=25, force_terminal=True)
     console.print(render_sidebar(sessions))
     out = console.export_text().splitlines()
     arrow_idx = next(i for i, ln in enumerate(out) if "↳" in ln)
