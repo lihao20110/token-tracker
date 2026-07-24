@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -17,6 +18,30 @@ def test_current_session_id_prefers_explicit_then_codex(monkeypatch):
     assert sidebar_command._current_session_id() == "explicit"
 
 
+def test_current_session_id_falls_back_to_kimi_cwd_session(tmp_path, monkeypatch):
+    # Kimi 会话内无 session id 环境变量 → 回退「workDir == cwd 且 updatedAt 最新」的会话
+    for var in ("TT_SIDEBAR_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_SESSION_ID"):
+        monkeypatch.delenv(var, raising=False)
+    kimi_home_dir = tmp_path / ".kimi-code"
+    proj = tmp_path / "proj"
+    proj.mkdir()
+
+    def _state(sid: str, updated_at: str, work_dir: str = str(proj)) -> None:
+        d = kimi_home_dir / "sessions" / "wd_proj_abc123def456" / sid
+        d.mkdir(parents=True)
+        (d / "state.json").write_text(
+            json.dumps({"workDir": work_dir, "updatedAt": updated_at}), encoding="utf-8"
+        )
+
+    _state("session_old", "2026-07-24T10:00:00.000Z")
+    _state("session_new", "2026-07-24T11:00:00.000Z")
+    _state("session_other_proj", "2026-07-24T12:00:00.000Z", work_dir=str(tmp_path / "elsewhere"))
+    monkeypatch.setenv("KIMI_CODE_HOME", str(kimi_home_dir))
+    monkeypatch.chdir(proj)
+
+    assert sidebar_command._current_session_id() == "session_new"
+
+
 def test_sidebar_command_uses_installed_module_not_project_path(monkeypatch):
     monkeypatch.setattr(sidebar_command.sys, "executable", "/opt/tt env/bin/python")
     command = sidebar_command._sidebar_command("thread-1")
@@ -25,7 +50,7 @@ def test_sidebar_command_uses_installed_module_not_project_path(monkeypatch):
     assert "/opt/tt env/bin/python" in command
 
 
-def test_current_sessions_scans_only_codex_and_keeps_all_prompts(monkeypatch):
+def test_current_sessions_scans_all_agents_and_keeps_all_prompts(monkeypatch):
     from token_tracker import sidebar
 
     target = SimpleNamespace(session_id="target")
@@ -35,7 +60,7 @@ def test_current_sessions_scans_only_codex_and_keeps_all_prompts(monkeypatch):
 
     assert sidebar_command.current_sessions("target") == [target]
     assert scan.call_args.kwargs == {
-        "agent_ids": {"codex"}, "max_sessions": 1000, "max_prompts": None,
+        "agent_ids": None, "max_sessions": 1000, "max_prompts": None,
     }
 
 

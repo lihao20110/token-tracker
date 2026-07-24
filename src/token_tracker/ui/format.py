@@ -5,8 +5,8 @@ from rich.text import Text
 from .console import get_console
 from .theme import _S
 
-AGENT_SHORT = {"claude-code": "Claude", "codex": "Codex"}
-AGENT_LABEL = {"claude-code": "Claude Code", "codex": "Codex"}
+AGENT_SHORT = {"claude-code": "Claude", "codex": "Codex", "kimi": "Kimi"}
+AGENT_LABEL = {"claude-code": "Claude Code", "codex": "Codex", "kimi": "Kimi Code"}
 
 MODEL_SHORT = {
     "claude-fable-5": "Fable 5",
@@ -18,6 +18,10 @@ MODEL_SHORT = {
     "claude-sonnet": "Sonnet",
     "claude-haiku-4-5-20251001": "Haiku 4.5",
     "claude-haiku": "Haiku",
+    # Kimi Code 会话 wire.jsonl 里的模型 id（usage.record.model，带 alias 前缀）
+    "kimi-code/k3": "Kimi K3",
+    "kimi-code/kimi-for-coding": "Kimi K2.7",
+    "kimi-code/kimi-for-coding-highspeed": "Kimi K2.7 HS",
     # 国产模型短名（与 cost.py 内置定价 key 一一对应）
     "kimi-k2.7-code": "Kimi K2.7",
     "kimi-k2.6": "Kimi K2.6",

@@ -13,8 +13,21 @@ from pathlib import Path
 from typing import Any
 
 MAX_EVENT_BYTES = 4 * 1024 * 1024
-_AGENT_IDS = {"claude-code", "codex"}
+_AGENT_IDS = {"claude-code", "codex", "kimi"}
 _SLASH_COMMAND_RE = re.compile(r"^/[A-Za-z0-9][A-Za-z0-9_-]*(:[A-Za-z0-9_-]+)?(\s|$)")
+
+
+def _prompt_text(raw: Any) -> str:
+    """hook 载荷里的 prompt：CC/Codex 是纯字符串；Kimi 是 content parts 数组
+    （[{"type": "text", "text": ...}]），拼接其中 text 片段。其它形态一律无效。"""
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, list):
+        return "\n".join(
+            p["text"] for p in raw
+            if isinstance(p, dict) and p.get("type") == "text" and isinstance(p.get("text"), str)
+        )
+    return ""
 
 
 @dataclass(frozen=True)
@@ -40,20 +53,17 @@ def prompt_fifo_path(session_id: str, channel_dir: str | os.PathLike[str]) -> st
 
 
 def prompt_event_from_hook(data: Any, agent_id: str) -> PromptEvent | None:
-    """把 CC/Codex UserPromptSubmit stdin 规范化为 sidebar 事件。"""
+    """把 CC/Codex/Kimi 的 UserPromptSubmit stdin 规范化为 sidebar 事件。"""
     if not isinstance(data, dict) or agent_id not in _AGENT_IDS:
         return None
     if data.get("hook_event_name") != "UserPromptSubmit":
         return None
     session_id = data.get("session_id")
-    prompt = data.get("prompt")
-    if not isinstance(session_id, str) or not session_id.strip() or not isinstance(prompt, str):
+    prompt = _prompt_text(data.get("prompt")).strip()
+    if not isinstance(session_id, str) or not session_id.strip() or not prompt:
         return None
-    prompt = prompt.strip()
-    if not prompt:
-        return None
-    # CC 的 slash command 本来就不会进入 transcript 提示词列表；事件流保持同一口径。
-    if agent_id == "claude-code" and _SLASH_COMMAND_RE.match(prompt):
+    # CC/Kimi 的 slash command 本来就不会进入 transcript 提示词列表；事件流保持同一口径。
+    if agent_id in ("claude-code", "kimi") and _SLASH_COMMAND_RE.match(prompt):
         return None
     return PromptEvent(
         session_id=session_id.strip(),

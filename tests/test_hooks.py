@@ -4,6 +4,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 
 import pytest
 
@@ -26,6 +27,11 @@ def _isolate_real_home(tmp_path, monkeypatch):
     monkeypatch.setattr(hooks, "HOOK_SCRIPT_PATH", str(tt / "claude-statusline.py"))
     monkeypatch.setattr(hooks, "CODEX_DIR", str(home / ".codex"))
     monkeypatch.setattr(hooks, "CODEX_CONFIG", str(home / ".codex" / "config.toml"))
+    monkeypatch.setattr(hooks, "_KIMI", str(home / ".kimi-code"))
+    monkeypatch.setattr(sidebar_install, "KIMI_CONFIG", str(home / ".kimi-code" / "config.toml"))
+    monkeypatch.setattr(
+        sidebar_install, "KIMI_SKILL_DIR", str(home / ".kimi-code" / "skills" / "tt-sidebar")
+    )
     monkeypatch.setattr(hooks, "CODEX_STATUSLINE_HOOK_PATH", str(tt / "codex-statusline.py"))
     monkeypatch.setattr(sidebar_install, "CODEX_HOOKS", str(home / ".codex" / "hooks.json"))
     monkeypatch.setattr(
@@ -1087,3 +1093,50 @@ def test_ask_components_cc_only(monkeypatch):
     c = wizard.ask_components()
     assert len(calls) == 1
     assert c.cc_statusline is True and c.codex_faux_statusline is True
+
+
+# --- Kimi Code sidebar 接线（Skill + config.toml 的 UserPromptSubmit hook） ---
+
+def _patch_kimi_home(monkeypatch, kimi_dir):
+    monkeypatch.setattr(hooks, "_KIMI", str(kimi_dir))
+    monkeypatch.setattr(sidebar_install, "KIMI_CONFIG", str(kimi_dir / "config.toml"))
+    monkeypatch.setattr(sidebar_install, "KIMI_SKILL_DIR", str(kimi_dir / "skills" / "tt-sidebar"))
+
+
+def test_setup_and_unsetup_kimi_sidebar(tmp_path, monkeypatch):
+    kimi_dir = tmp_path / "kimi-home"
+    kimi_dir.mkdir()
+    _patch_kimi_home(monkeypatch, kimi_dir)
+    # CC / Codex 目录不存在（autouse fixture 指向 tmp 下不存在的路径），只有 Kimi
+
+    hooks.setup(auto=True, quiet=True)
+    assert (kimi_dir / "skills" / "tt-sidebar" / "SKILL.md").exists()
+    parsed = tomllib.loads((kimi_dir / "config.toml").read_text(encoding="utf-8"))
+    assert any("prompt-hook --agent kimi" in h.get("command", "") for h in parsed["hooks"])
+
+    hooks.unsetup()
+    assert not (kimi_dir / "skills" / "tt-sidebar" / "SKILL.md").exists()
+    assert "token_tracker" not in (kimi_dir / "config.toml").read_text(encoding="utf-8")
+
+
+def test_needs_update_detects_missing_kimi_sidebar(tmp_path, monkeypatch):
+    kimi_dir = tmp_path / "kimi-home"
+    kimi_dir.mkdir()
+    _patch_kimi_home(monkeypatch, kimi_dir)
+    config.save_setup_version(config.SETUP_VERSION)
+
+    assert hooks.needs_update()  # Kimi 已装但 sidebar 产物缺失
+    hooks._setup_kimi_sidebar(quiet=True)
+    assert not hooks.needs_update()
+
+
+def test_update_hook_syncs_kimi_sidebar(tmp_path, monkeypatch):
+    kimi_dir = tmp_path / "kimi-home"
+    kimi_dir.mkdir()
+    _patch_kimi_home(monkeypatch, kimi_dir)
+    config.save_setup_version(config.SETUP_VERSION)
+
+    hooks.update_hook()
+    assert (kimi_dir / "skills" / "tt-sidebar" / "SKILL.md").exists()
+    parsed = tomllib.loads((kimi_dir / "config.toml").read_text(encoding="utf-8"))
+    assert any("prompt-hook --agent kimi" in h.get("command", "") for h in parsed["hooks"])

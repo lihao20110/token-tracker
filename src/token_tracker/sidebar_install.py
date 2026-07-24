@@ -1,17 +1,20 @@
-"""安装随包分发的 Codex ``$tt-sidebar`` Skill 与 Token Tracker 用户级 Hooks。"""
+"""安装随包分发的 Codex/Kimi ``tt-sidebar`` Skill 与 Token Tracker 用户级 Hooks。"""
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import sys
+import tomllib
 from collections.abc import Callable
 from importlib import resources
 
-from .adapters.util import codex_home
+from .adapters.util import codex_home, kimi_home
 
 CODEX_HOOKS = os.path.join(codex_home(), "hooks.json")
+KIMI_CONFIG = os.path.join(kimi_home(), "config.toml")
 
 # Codex 官方用户级 Skill 目录是 $HOME/.agents/skills（不是 $CODEX_HOME/skills）。
 SIDEBAR_SKILL_DIR = os.path.join(os.path.expanduser("~"), ".agents", "skills", "tt-sidebar")
@@ -21,9 +24,15 @@ _SKILL_MARKER = "<!-- token-tracker-managed -->"
 _PROMPT_HOOK_TOKEN = "token_tracker.sidebar_command prompt-hook --agent codex"
 _STATUSLINE_HOOK_TOKENS = ("codex-statusline.py", "tt-statusline.py")
 
+# Kimi 官方用户级 Skill 目录是 $KIMI_CODE_HOME/skills（也扫描 ~/.agents/skills，
+# 但那是 Codex 侧同名 Skill 的位置；Kimi 专属副本放自己的目录、优先级更高）。
+KIMI_SKILL_DIR = os.path.join(kimi_home(), "skills", "tt-sidebar")
+_KIMI_SKILL_PACKAGE = "token_tracker.skills.tt_sidebar_kimi"
+_KIMI_SKILL_FILES = ("SKILL.md",)
 
-def _load_skill_resource(relative_path: str) -> str:
-    node = resources.files(_SKILL_PACKAGE)
+
+def _load_skill_resource(relative_path: str, package: str = _SKILL_PACKAGE) -> str:
+    node = resources.files(package)
     for part in relative_path.split("/"):
         node = node / part
     return node.read_text(encoding="utf-8")
@@ -36,8 +45,8 @@ def build_module_command(python: str, action: str) -> str:
     return f'"{python}" -B -m token_tracker.sidebar_command {action}'
 
 
-def render_skill(relative_path: str) -> str:
-    content = _load_skill_resource(relative_path)
+def render_skill(relative_path: str, package: str = _SKILL_PACKAGE) -> str:
+    content = _load_skill_resource(relative_path, package)
     if relative_path == "SKILL.md":
         command = build_module_command(sys.executable or "python3", "split")
         content = content.replace("__TT_SIDEBAR_COMMAND__", command)
@@ -78,37 +87,37 @@ def _write_json_atomic(path: str, data: dict) -> None:
             pass
 
 
-def skill_managed() -> bool:
+def _skill_managed(skill_dir: str) -> bool:
     try:
-        with open(os.path.join(SIDEBAR_SKILL_DIR, "SKILL.md"), encoding="utf-8") as f:
+        with open(os.path.join(skill_dir, "SKILL.md"), encoding="utf-8") as f:
             return _SKILL_MARKER in f.read()
     except OSError:
         return False
 
 
-def skill_needs_sync() -> bool:
-    skill_path = os.path.join(SIDEBAR_SKILL_DIR, "SKILL.md")
-    if os.path.exists(skill_path) and not skill_managed():
+def _skill_needs_sync(skill_dir: str, package: str, files: tuple[str, ...]) -> bool:
+    skill_path = os.path.join(skill_dir, "SKILL.md")
+    if os.path.exists(skill_path) and not _skill_managed(skill_dir):
         return False  # 同名用户 Skill 不归 tt 改，避免每次启动都触发更新
-    for relative_path in _SKILL_FILES:
-        path = os.path.join(SIDEBAR_SKILL_DIR, *relative_path.split("/"))
+    for relative_path in files:
+        path = os.path.join(skill_dir, *relative_path.split("/"))
         try:
             with open(path, encoding="utf-8") as f:
-                if f.read() != render_skill(relative_path):
+                if f.read() != render_skill(relative_path, package):
                     return True
         except OSError:
             return True
     return False
 
 
-def install_skill() -> bool:
-    skill_path = os.path.join(SIDEBAR_SKILL_DIR, "SKILL.md")
-    if os.path.exists(skill_path) and not skill_managed():
+def _install_skill(skill_dir: str, package: str, files: tuple[str, ...]) -> bool:
+    skill_path = os.path.join(skill_dir, "SKILL.md")
+    if os.path.exists(skill_path) and not _skill_managed(skill_dir):
         raise FileExistsError(skill_path)
     changed = False
-    for relative_path in _SKILL_FILES:
-        path = os.path.join(SIDEBAR_SKILL_DIR, *relative_path.split("/"))
-        expected = render_skill(relative_path)
+    for relative_path in files:
+        path = os.path.join(skill_dir, *relative_path.split("/"))
+        expected = render_skill(relative_path, package)
         try:
             with open(path, encoding="utf-8") as f:
                 current = f.read()
@@ -120,23 +129,39 @@ def install_skill() -> bool:
     return changed
 
 
-def uninstall_skill() -> bool:
-    if not skill_managed():
+def _uninstall_skill(skill_dir: str, files: tuple[str, ...]) -> bool:
+    if not _skill_managed(skill_dir):
         return False
     changed = False
-    for relative_path in reversed(_SKILL_FILES):
-        path = os.path.join(SIDEBAR_SKILL_DIR, *relative_path.split("/"))
+    for relative_path in reversed(files):
+        path = os.path.join(skill_dir, *relative_path.split("/"))
         try:
             os.remove(path)
             changed = True
         except FileNotFoundError:
             pass
-    for directory in (os.path.join(SIDEBAR_SKILL_DIR, "agents"), SIDEBAR_SKILL_DIR):
+    for directory in (os.path.join(skill_dir, "agents"), skill_dir):
         try:
             os.rmdir(directory)
         except OSError:
             pass  # 用户若加了其它文件就保留目录，只移除 tt 管理的 Skill 入口
     return changed
+
+
+def skill_managed() -> bool:
+    return _skill_managed(SIDEBAR_SKILL_DIR)
+
+
+def skill_needs_sync() -> bool:
+    return _skill_needs_sync(SIDEBAR_SKILL_DIR, _SKILL_PACKAGE, _SKILL_FILES)
+
+
+def install_skill() -> bool:
+    return _install_skill(SIDEBAR_SKILL_DIR, _SKILL_PACKAGE, _SKILL_FILES)
+
+
+def uninstall_skill() -> bool:
+    return _uninstall_skill(SIDEBAR_SKILL_DIR, _SKILL_FILES)
 
 
 def _prompt_hook_handler() -> dict:
@@ -333,4 +358,102 @@ def uninstall_managed_hooks() -> bool:
         _write_json_atomic(CODEX_HOOKS, updated)
     else:
         os.remove(CODEX_HOOKS)
+    return True
+
+
+# --- Kimi Code（config.toml 的 [[hooks]] + $KIMI_CODE_HOME/skills） ---
+
+_KIMI_HOOK_COMMAND_ACTION = "prompt-hook --agent kimi"
+# 只认 tt 自己写入的整块 [[hooks]]（command 为 TOML literal string，含 prompt-hook --agent kimi 特征）；
+# 用户手写的其它 [[hooks]] 块一律不动
+_KIMI_HOOK_BLOCK_RE = re.compile(
+    r"\n*\[\[hooks\]\]\s*"
+    r'event = "UserPromptSubmit"\s*'
+    r"command = '[^'\n]*token_tracker\.sidebar_command prompt-hook --agent kimi[^'\n]*'\s*"
+    r"timeout = \d+\s*"
+)
+
+
+def kimi_skill_managed() -> bool:
+    return _skill_managed(KIMI_SKILL_DIR)
+
+
+def kimi_skill_needs_sync() -> bool:
+    return _skill_needs_sync(KIMI_SKILL_DIR, _KIMI_SKILL_PACKAGE, _KIMI_SKILL_FILES)
+
+
+def install_kimi_skill() -> bool:
+    return _install_skill(KIMI_SKILL_DIR, _KIMI_SKILL_PACKAGE, _KIMI_SKILL_FILES)
+
+
+def uninstall_kimi_skill() -> bool:
+    return _uninstall_skill(KIMI_SKILL_DIR, _KIMI_SKILL_FILES)
+
+
+def _kimi_hook_block() -> str:
+    command = build_module_command(sys.executable or "python3", _KIMI_HOOK_COMMAND_ACTION)
+    return (
+        "[[hooks]]\n"
+        'event = "UserPromptSubmit"\n'
+        f"command = '{command}'\n"
+        "timeout = 2\n"
+    )
+
+
+def _read_kimi_config() -> str:
+    """读 Kimi config.toml 原文；不存在返回空串；TOML 损坏抛 ValueError（不静默覆盖用户配置）。"""
+    if not os.path.exists(KIMI_CONFIG):
+        return ""
+    try:
+        with open(KIMI_CONFIG, encoding="utf-8") as f:
+            content = f.read()
+    except OSError:
+        return ""
+    try:
+        tomllib.loads(content)
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(KIMI_CONFIG) from exc
+    return content
+
+
+def _without_kimi_hook(content: str) -> tuple[str, bool]:
+    updated = _KIMI_HOOK_BLOCK_RE.sub("\n", content)
+    return updated, updated != content
+
+
+def _with_kimi_hook(content: str) -> str:
+    """移除旧版托管块后在文件末尾追加当前块。[[hooks]] 是顶级 array-of-tables 头，
+    追加在 EOF 永远是合法 TOML，用户其它配置原样保留。"""
+    stripped, _removed = _without_kimi_hook(content)
+    block = _kimi_hook_block()
+    if not stripped.strip():
+        return block
+    return stripped.rstrip("\n") + "\n\n" + block
+
+
+def kimi_hooks_need_sync() -> bool:
+    try:
+        content = _read_kimi_config()
+        return content != _with_kimi_hook(content)
+    except ValueError:
+        return False  # 损坏配置只在显式 setup 时提示，自动更新绝不覆盖
+
+
+def install_kimi_hooks() -> bool:
+    content = _read_kimi_config()
+    updated = _with_kimi_hook(content)
+    if updated == content:
+        return False
+    _write_text_atomic(KIMI_CONFIG, updated)
+    return True
+
+
+def uninstall_kimi_hooks() -> bool:
+    if not os.path.exists(KIMI_CONFIG):
+        return False
+    content = _read_kimi_config()
+    updated, removed = _without_kimi_hook(content)
+    if not removed:
+        return False
+    _write_text_atomic(KIMI_CONFIG, updated)
     return True

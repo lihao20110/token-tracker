@@ -1,4 +1,5 @@
 import json
+import tomllib
 
 import pytest
 
@@ -181,3 +182,93 @@ def test_hook_refuses_corrupt_json(tmp_path, monkeypatch):
     with pytest.raises(ValueError):
         sidebar_install.install_managed_hooks(None)
     assert path.read_text(encoding="utf-8") == "{broken"
+
+
+def test_kimi_skill_install_update_uninstall_roundtrip(tmp_path, monkeypatch):
+    skill_dir = tmp_path / ".kimi-code" / "skills" / "tt-sidebar"
+    monkeypatch.setattr(sidebar_install, "KIMI_SKILL_DIR", str(skill_dir))
+    monkeypatch.setattr(sidebar_install.sys, "executable", "/first/python")
+
+    assert sidebar_install.kimi_skill_needs_sync()
+    assert sidebar_install.install_kimi_skill()
+    assert not sidebar_install.kimi_skill_needs_sync()
+    content = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    assert "name: tt-sidebar" in content
+    assert '"/first/python" -B -m token_tracker.sidebar_command split' in content
+    assert sidebar_install._SKILL_MARKER in content
+    assert not sidebar_install.install_kimi_skill()  # 幂等
+
+    monkeypatch.setattr(sidebar_install.sys, "executable", "/new/python")
+    assert sidebar_install.kimi_skill_needs_sync()
+    assert sidebar_install.install_kimi_skill()
+    assert '"/new/python"' in (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+
+    assert sidebar_install.uninstall_kimi_skill()
+    assert not (skill_dir / "SKILL.md").exists()
+    assert not skill_dir.exists()
+
+
+def test_kimi_hook_merges_into_config_toml_and_preserves_user(tmp_path, monkeypatch):
+    path = tmp_path / ".kimi-code" / "config.toml"
+    path.parent.mkdir()
+    user_block = (
+        'default_model = "kimi-code/k3"\n\n'
+        '[[hooks]]\nevent = "PreToolUse"\nmatcher = "Bash"\ncommand = "node user.mjs"\ntimeout = 5\n'
+    )
+    path.write_text(user_block, encoding="utf-8")
+    monkeypatch.setattr(sidebar_install, "KIMI_CONFIG", str(path))
+    monkeypatch.setattr(sidebar_install.sys, "executable", "/venv/bin/python")
+
+    assert sidebar_install.kimi_hooks_need_sync()
+    assert sidebar_install.install_kimi_hooks()
+    assert not sidebar_install.install_kimi_hooks()  # 幂等
+    assert not sidebar_install.kimi_hooks_need_sync()
+
+    content = path.read_text(encoding="utf-8")
+    assert content.startswith(user_block)  # 用户配置原样保留，托管块追加在末尾
+    parsed = tomllib.loads(content)
+    assert parsed["default_model"] == "kimi-code/k3"
+    tt_hooks = [h for h in parsed["hooks"] if "token_tracker" in h.get("command", "")]
+    assert tt_hooks == [{
+        "event": "UserPromptSubmit",
+        "command": '"/venv/bin/python" -B -m token_tracker.sidebar_command prompt-hook --agent kimi',
+        "timeout": 2,
+    }]
+    assert {"event": "PreToolUse", "matcher": "Bash", "command": "node user.mjs", "timeout": 5} in parsed["hooks"]
+
+    # 解释器换了 → 需要重同步；旧托管块被替换而非叠加
+    monkeypatch.setattr(sidebar_install.sys, "executable", "/new/python")
+    assert sidebar_install.kimi_hooks_need_sync()
+    assert sidebar_install.install_kimi_hooks()
+    content = path.read_text(encoding="utf-8")
+    assert content.count("prompt-hook --agent kimi") == 1
+    assert '"/new/python"' in content
+
+    assert sidebar_install.uninstall_kimi_hooks()
+    assert path.read_text(encoding="utf-8") == user_block
+    assert not sidebar_install.uninstall_kimi_hooks()
+
+
+def test_kimi_hook_installs_into_missing_config(tmp_path, monkeypatch):
+    path = tmp_path / ".kimi-code" / "config.toml"
+    monkeypatch.setattr(sidebar_install, "KIMI_CONFIG", str(path))
+    monkeypatch.setattr(sidebar_install.sys, "executable", "/venv/bin/python")
+
+    assert sidebar_install.install_kimi_hooks()
+    parsed = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert parsed["hooks"] == [{
+        "event": "UserPromptSubmit",
+        "command": '"/venv/bin/python" -B -m token_tracker.sidebar_command prompt-hook --agent kimi',
+        "timeout": 2,
+    }]
+
+
+def test_kimi_hook_refuses_corrupt_toml(tmp_path, monkeypatch):
+    path = tmp_path / "config.toml"
+    path.write_text("default_model = [broken", encoding="utf-8")
+    monkeypatch.setattr(sidebar_install, "KIMI_CONFIG", str(path))
+
+    assert not sidebar_install.kimi_hooks_need_sync()
+    with pytest.raises(ValueError):
+        sidebar_install.install_kimi_hooks()
+    assert path.read_text(encoding="utf-8") == "default_model = [broken"

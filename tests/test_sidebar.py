@@ -300,6 +300,7 @@ def test_scan_sessions_caps_at_max_sessions(monkeypatch):
     monkeypatch.setattr(sidebar, "_live_claude_sids", lambda: None)  # 不读真实注册表
     monkeypatch.setattr(sidebar, "_scan_claude_sessions", lambda *a, **k: fake)
     monkeypatch.setattr(sidebar, "_scan_codex_sessions", lambda *a, **k: [])
+    monkeypatch.setattr(sidebar, "_scan_kimi_sessions", lambda *a, **k: [])  # 不读真实 ~/.kimi-code
     got = sidebar.scan_sessions()
     assert len(got) == 10
     assert [s.session_id for s in got] == [f"s{i}" for i in range(10)]  # 最新的 10 个
@@ -930,3 +931,109 @@ def test_render_sidebar_empty():
     console = Console(record=True, width=60)
     console.print(render_sidebar([]))
     assert "tt sidebar" in console.export_text()
+
+
+# --- Kimi wire.jsonl 解析（<kimi_home>/sessions/<wd_*>/<session_*>/agents/main/wire.jsonl） ---
+
+def _ms(seconds_ago: float = 60) -> int:
+    """Kimi wire 事件时间戳：epoch 毫秒（int）。"""
+    return int((datetime.now(UTC) - timedelta(seconds=seconds_ago)).timestamp() * 1000)
+
+
+def _kimi_turn(text: str, seconds_ago: float = 60, kind: str = "user") -> dict:
+    return {"type": "turn.prompt", "input": [{"type": "text", "text": text}],
+            "origin": {"kind": kind}, "time": _ms(seconds_ago)}
+
+
+def _kimi_loop(event: dict, seconds_ago: float = 60) -> dict:
+    return {"type": "context.append_loop_event", "event": event, "time": _ms(seconds_ago)}
+
+
+def _write_kimi_session(sessions_dir: Path, sid: str, rows: list[dict],
+                        work_dir: str = "", with_state: bool = True,
+                        wd: str = "wd_myproj_abc123def456") -> None:
+    session_dir = sessions_dir / wd / sid
+    wire = session_dir / "agents" / "main" / "wire.jsonl"
+    wire.parent.mkdir(parents=True, exist_ok=True)
+    _write_jsonl(wire, rows)
+    if with_state:
+        (session_dir / "state.json").write_text(json.dumps({"workDir": work_dir}), encoding="utf-8")
+
+
+def _scan_kimi(sessions_dir: Path, max_prompts: int | None = 3) -> list[LiveSession]:
+    now = datetime.now(UTC)
+    return sidebar._scan_kimi_sessions(now - timedelta(hours=5), now, None, max_prompts,
+                                       sessions_dir=str(sessions_dir))
+
+
+def test_kimi_scan_extracts_prompts_model_and_project(tmp_path):
+    sessions_dir = tmp_path / "sessions"
+    proj = tmp_path / "myproj"
+    _write_kimi_session(sessions_dir, "session_s1", [
+        _kimi_turn("第一条提示词", 120),
+        _kimi_turn("goal 描述不是提示词", 110, kind="goal"),
+        _kimi_turn('<cron-fire jobId="x"><prompt>定时任务</prompt></cron-fire>', 100),
+        _kimi_turn("/skill:tt-sidebar", 90),
+        {"type": "usage.record", "model": "kimi-code/k3",
+         "usage": {"inputOther": 1, "output": 2}, "time": _ms(80)},
+        _kimi_turn("第二条提示词", 70),
+    ], work_dir=str(proj))
+    # 子代理的 wire 不算主人的提示词来源
+    sub_wire = (sessions_dir / "wd_myproj_abc123def456" / "session_s1"
+                / "agents" / "agent-0" / "wire.jsonl")
+    sub_wire.parent.mkdir(parents=True)
+    _write_jsonl(sub_wire, [_kimi_turn("子代理的提示词", 60)])
+
+    got = _scan_kimi(sessions_dir)
+    assert len(got) == 1
+    s = got[0]
+    assert s.agent_id == "kimi"
+    assert s.session_id == "session_s1"
+    assert s.project == "myproj"
+    assert s.model == "kimi-code/k3"
+    assert [p.text for p in s.prompts] == ["第一条提示词", "第二条提示词"]
+    assert s.state == WAITING  # 70s 前最后活动、无 pending → 等输入
+
+
+def test_kimi_scan_pending_tool_call_marks_attention(tmp_path):
+    sessions_dir = tmp_path / "sessions"
+    rows = [
+        _kimi_turn("跑个任务", 120),
+        _kimi_loop({"type": "tool.call", "toolCallId": "c1", "name": "Bash", "args": {}}, 100),
+    ]
+    _write_kimi_session(sessions_dir, "session_s1", rows, work_dir="/tmp/myproj")
+    assert _scan_kimi(sessions_dir)[0].state == ATTENTION
+
+    rows.append(_kimi_loop({"type": "tool.result", "toolCallId": "c1", "result": {}}, 90))
+    _write_kimi_session(sessions_dir, "session_s1", rows, work_dir="/tmp/myproj")
+    assert _scan_kimi(sessions_dir)[0].state == WAITING
+
+
+def test_kimi_scan_ask_user_question_becomes_hint(tmp_path):
+    sessions_dir = tmp_path / "sessions"
+    _write_kimi_session(sessions_dir, "session_s1", [
+        _kimi_turn("选个方案", 120),
+        _kimi_loop({"type": "tool.call", "toolCallId": "q1", "name": "AskUserQuestion",
+                    "args": {"questions": [{"question": "选哪个？",
+                                            "options": [{"label": "甲"}, {"label": "乙"}]}]}}, 100),
+    ], work_dir="/tmp/myproj")
+    got = _scan_kimi(sessions_dir)
+    assert got[0].next_hint == "选哪个？\n· 甲 / 乙"
+
+
+def test_kimi_scan_skips_sessions_outside_window(tmp_path):
+    sessions_dir = tmp_path / "sessions"
+    _write_kimi_session(sessions_dir, "session_old", [_kimi_turn("很早的提示词", 6 * 3600)],
+                        work_dir="/tmp/myproj")
+    assert _scan_kimi(sessions_dir) == []
+
+
+def test_kimi_scan_truncates_prompts_and_falls_back_to_wd_name(tmp_path):
+    sessions_dir = tmp_path / "sessions"
+    _write_kimi_session(sessions_dir, "session_s2", [
+        _kimi_turn("第一条", 120),
+        _kimi_turn("第二条", 110),
+    ], with_state=False)  # 无 state.json → 项目名回退 wd_<name>_<hash> 目录名
+    got = _scan_kimi(sessions_dir, max_prompts=1)
+    assert got[0].project == "myproj"
+    assert [p.text for p in got[0].prompts] == ["第二条"]

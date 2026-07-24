@@ -10,6 +10,7 @@ from .adapters import claude, codex
 from .adapters.rate_limits import load_rate_limits as load_claude_rate_limits
 from .adapters.registry import detect_agents
 from .adapters.types import StatusSummary
+from .adapters.util import kimi_home
 from .analyzer.aggregator import (
     add_token_fields,
     aggregate_daily,
@@ -228,6 +229,9 @@ def _cmd_sidebar(agents, args: list[str]) -> None:
     不写任何产物；不跟随会话收窄 agent——侧边栏本职是「总览所有会话」，
     显式 --claude / --codex 才过滤。"""
     agent_ids = {a.id for a in agents}
+    # kimi 暂无 usage adapter（不进 registry），sidebar 按数据目录存在与否单独纳入
+    if os.path.isdir(os.path.join(kimi_home(), "sessions")):
+        agent_ids.add("kimi")
     if "--once" in args or not sys.stdout.isatty():
         sessions = scan_sessions(agent_ids=agent_ids)
         with forced_color_console():

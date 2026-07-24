@@ -57,6 +57,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "token_tracker.skills.tt_sidebar" = ["SKILL.md", "agents/*.yaml"]
+"token_tracker.skills.tt_sidebar_kimi" = ["SKILL.md"]
 
 [tool.ruff]
 line-length = 120

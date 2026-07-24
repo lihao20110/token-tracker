@@ -8,13 +8,14 @@ from dataclasses import dataclass
 from importlib import resources
 
 from . import config, sidebar_install
-from .adapters.util import claude_home, codex_home
+from .adapters.util import claude_home, codex_home, kimi_home
 from .i18n import t
 from .ui import themes
 from .ui.console import get_console
 
 _CLAUDE = claude_home()  # CLAUDE_CONFIG_DIR 覆盖 / ~/.claude
 _CODEX = codex_home()    # CODEX_HOME 覆盖 / ~/.codex
+_KIMI = kimi_home()      # KIMI_CODE_HOME 覆盖 / ~/.kimi-code
 
 
 @dataclass
@@ -387,6 +388,10 @@ def needs_update() -> bool:
             or _inline_codex_statusline_present()
         ):
             return True
+    # setup_version 4 起，Kimi 的 tt-sidebar Skill 与 UserPromptSubmit hook 也属于 setup 产物
+    if os.path.isdir(_KIMI) and config.setup_version() >= 4:
+        if sidebar_install.kimi_skill_needs_sync() or sidebar_install.kimi_hooks_need_sync():
+            return True
     return _cc_command_needs_sync()  # settings.json 里 command 格式过时也算待更新（issue #13/#14）
 
 
@@ -400,6 +405,8 @@ def update_hook() -> None:
     if os.path.isdir(CODEX_DIR) and config.setup_version() >= 3:
         _sync_codex_managed_hooks(quiet=True)
         _setup_codex_sidebar(quiet=True)
+    if os.path.isdir(_KIMI) and config.setup_version() >= 4:
+        _setup_kimi_sidebar(quiet=True)
 
 
 # --- setup ---
@@ -414,8 +421,9 @@ def setup(auto: bool = False, components: SetupComponents | None = None, quiet: 
 
     has_cc = os.path.isdir(os.path.dirname(CLAUDE_SETTINGS))
     has_codex = os.path.isdir(CODEX_DIR)
+    has_kimi = os.path.isdir(_KIMI)
 
-    if not has_cc and not has_codex:
+    if not has_cc and not has_codex and not has_kimi:
         p(f"[red]{t('no_agent_install')}[/red]")
         return
 
@@ -437,6 +445,12 @@ def setup(auto: bool = False, components: SetupComponents | None = None, quiet: 
     else:
         if not auto:
             p(f"[dim]{t('codex_not_found')}[/dim]")
+
+    if has_kimi:
+        _setup_kimi_sidebar(quiet)
+    else:
+        if not auto:
+            p(f"[dim]{t('kimi_not_found')}[/dim]")
 
     # setup 真正落地了，写入当前引导版本——后续启动 cli 不再触发"老用户重新引导"。
     # early-return 分支（无 agent）不会到这，符合语义。
@@ -584,18 +598,47 @@ def _setup_codex_sidebar(quiet: bool = False) -> None:
         )
 
 
+def _setup_kimi_sidebar(quiet: bool = False) -> None:
+    """Kimi 端：安装 $KIMI_CODE_HOME/skills 下的 tt-sidebar Skill + config.toml 的
+    UserPromptSubmit hook（Kimi 无 statusline 组件，仅 sidebar 事件通道）。"""
+    p = (lambda *a, **k: None) if quiet else get_console().print
+    try:
+        skill_changed = sidebar_install.install_kimi_skill()
+    except FileExistsError:
+        get_console().print(
+            f"[yellow]{t('sidebar_skill_conflict', path=sidebar_install.KIMI_SKILL_DIR)}[/yellow]"
+        )
+        skill_changed = False
+    try:
+        hooks_changed = sidebar_install.install_kimi_hooks()
+    except ValueError:
+        get_console().print(
+            f"[red]{t('kimi_hooks_corrupt', path=sidebar_install.KIMI_CONFIG)}[/red]"
+        )
+        hooks_changed = False
+    if skill_changed:
+        p(f"[green]✓[/green] {t('kimi_skill_installed', path=sidebar_install.KIMI_SKILL_DIR)}")
+    if hooks_changed:
+        p(f"[green]✓[/green] {t('kimi_hooks_synced')}")
+    if skill_changed or hooks_changed:
+        p(f"[dim]{t('kimi_hook_hint')}[/dim]")
+
+
 # --- unsetup ---
 
 def unsetup() -> None:
     has_cc = os.path.isdir(os.path.dirname(CLAUDE_SETTINGS))
     has_codex = os.path.isdir(CODEX_DIR)
+    has_kimi = os.path.isdir(_KIMI)
 
     if has_cc:
         _unsetup_claude()
     if has_codex:
         _unsetup_codex()
         _unsetup_codex_sidebar()
-    if not has_cc and not has_codex:
+    if has_kimi:
+        _unsetup_kimi_sidebar()
+    if not has_cc and not has_codex and not has_kimi:
         get_console().print(f"[dim]{t('no_agent_detected')}[/dim]")
 
 
@@ -667,3 +710,19 @@ def _unsetup_codex_sidebar() -> None:
         return
     if hook_removed:
         get_console().print(f"[green]✓[/green] {t('codex_hooks_removed')}")
+
+
+def _unsetup_kimi_sidebar() -> None:
+    if sidebar_install.uninstall_kimi_skill():
+        get_console().print(
+            f"[green]✓[/green] {t('deleted_file', path=sidebar_install.KIMI_SKILL_DIR)}"
+        )
+    try:
+        hook_removed = sidebar_install.uninstall_kimi_hooks()
+    except ValueError:
+        get_console().print(
+            f"[red]{t('kimi_hooks_corrupt_unsetup', path=sidebar_install.KIMI_CONFIG)}[/red]"
+        )
+        return
+    if hook_removed:
+        get_console().print(f"[green]✓[/green] {t('kimi_hooks_removed')}")

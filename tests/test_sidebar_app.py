@@ -67,6 +67,27 @@ def test_prompt_event_from_hook_validates_and_keeps_agent_filtering():
     assert claude_event is not None and claude_event.turn_id == "prompt-cc-1"
 
 
+def test_prompt_event_from_hook_kimi_parts_payload():
+    # Kimi 的 prompt 是 content parts 数组（实测 UserPromptSubmit stdin），无 model/turn_id
+    data = {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "session_abc",
+        "cwd": "/tmp/project",
+        "prompt": [{"type": "text", "text": "第一句"}, {"type": "text", "text": "第二句"}],
+    }
+    assert prompt_event_from_hook(data, "kimi") == PromptEvent(
+        session_id="session_abc",
+        prompt="第一句\n第二句",
+        agent_id="kimi",
+        cwd="/tmp/project",
+    )
+    # slash 命令与 transcript 口径一致地过滤；未知 agent 拒绝
+    slash = {**data, "prompt": [{"type": "text", "text": "/skill:tt-sidebar"}]}
+    assert prompt_event_from_hook(slash, "kimi") is None
+    assert prompt_event_from_hook(data, "kimi-code") is None
+    assert prompt_event_from_hook({**data, "prompt": [{"type": "image"}]}, "kimi") is None
+
+
 async def test_sidebar_app_boots_renders_and_quits(monkeypatch):
     app = SidebarApp(agent_ids=set())
     intervals: list[float] = []

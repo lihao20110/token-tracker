@@ -5,6 +5,9 @@
   全程防御式解析：缺字段/类型不对一律跳过不崩。
 - Codex rollout jsonl（`~/.codex/sessions/`）——`user_message` 事件干净可靠，
   `task_started` / `task_complete` 供状态判定。
+- Kimi wire jsonl（`~/.kimi-code/sessions/<wd_*>/<session_*>/agents/main/wire.jsonl`）——
+  `turn.prompt`（origin.kind=="user"）是提示词来源；`usage.record` 给模型；
+  `tool.call`/`tool.result` 配对判 pending；项目名取自同目录 state.json 的 workDir。
 - 心跳 `config.STATUS_FILE`（CC statusline 每帧落盘）——`session_id` + `_received_at`
   判「正在跑」，白拿、零新增开销；Codex Stop hook 的终端定位单独落
   `config.TERMINAL_MAP_FILE`，读取时与 CC status 文件里的映射合并。
@@ -26,7 +29,7 @@ from pathlib import Path
 from . import config
 from .adapters import claude as claude_adapter
 from .adapters import codex as codex_adapter
-from .adapters.util import claude_home, iter_jsonl_dicts, project_from_cwd
+from .adapters.util import claude_home, iter_jsonl_dicts, kimi_home, project_from_cwd
 
 # 会话状态（启发式，见 _infer_state；ATTENTION 无法区分「等授权」和「长工具在跑」，v2 接 hooks 后才能）
 RUNNING = "running"      # 正在生成 / 写盘
@@ -52,6 +55,8 @@ _CLAUDE_SKIP_PREFIXES = ("<command-", "<local-command-", "[Request interrupted",
 _SLASH_COMMAND_RE = re.compile(r"^/[A-Za-z0-9][A-Za-z0-9_-]*(:[A-Za-z0-9_-]+)?(\s|$)")
 # Codex 里包装成 user_message 的注入内容（用户指令模板 / 环境上下文等）
 _CODEX_SKIP_PREFIXES = ("<user_instructions", "<environment_context", "<ide_", "<permissions", "<turn_")
+# Kimi 里非「人敲的提示词」的内容前缀（cron 触发信封 / harness 注入 / 命令记录）
+_KIMI_SKIP_PREFIXES = ("<cron-fire", "<system-reminder", "<command-")
 
 _CACHE_MAX = 512  # 解析缓存上限（常驻进程防无限增长，超了整体重建）
 
@@ -116,6 +121,18 @@ class _CodexParseState:
     branch: str = ""
 
 
+@dataclass
+class _KimiParseState:
+    session_id: str
+    project: str = "unknown"
+    prompts: list[Prompt] = field(default_factory=list)
+    pending_calls: set[str] = field(default_factory=set)  # 已 call 未 result 的 toolCallId
+    model: str = ""
+    last_reply: str = ""
+    pending_question: str = ""
+    last_event: datetime | None = None
+
+
 # 按 (path, max_prompts) → (mtime_ns, size, result) 缓存：相同条数且文件未变才复用。
 # 解析结果已经按 max_prompts 截断（None 表示保留全部），参数必须进 key，避免先查 2 条后
 # 再查 5 条或全部时仍只返回 2 条。
@@ -137,6 +154,8 @@ def scan_sessions(hours_back: int = DEFAULT_HOURS_BACK,
                                               live_sids=_live_claude_sids()))
     if agent_ids is None or "codex" in agent_ids:
         sessions.extend(_scan_codex_sessions(cutoff, now, heartbeat, max_prompts, term_map=term_map))
+    if agent_ids is None or "kimi" in agent_ids:
+        sessions.extend(_scan_kimi_sessions(cutoff, now, heartbeat, max_prompts, term_map=term_map))
     sessions.sort(key=lambda s: s.last_activity, reverse=True)
     return sessions[:max_sessions]
 
@@ -585,6 +604,141 @@ def _consume_codex_event(payload: dict, ts: datetime | None, state: _CodexParseS
         state.pending_task = True
     elif event_type in ("task_complete", "turn_aborted"):
         state.pending_task = False
+
+
+# --- Kimi Code ---
+
+def _scan_kimi_sessions(cutoff: datetime, now: datetime,
+                        heartbeat: tuple[str, datetime] | None,
+                        max_prompts: int | None,
+                        sessions_dir: str | None = None,
+                        term_map: dict[str, dict] | None = None) -> list[LiveSession]:
+    """扫描 `<kimi_home>/sessions/<wd_*>/<session_*>/agents/main/wire.jsonl`。
+    sessions_dir 供测试注入。Kimi 没有会话注册表，活跃度靠事件时间窗口判断（同 Codex）。"""
+    term_map = term_map or {}
+    base = Path(sessions_dir) if sessions_dir is not None else Path(kimi_home()) / "sessions"
+    if not base.is_dir():
+        return []
+    sessions: list[LiveSession] = []
+    seen: set[str] = set()
+    for path in base.glob("*/session_*/agents/main/wire.jsonl"):
+        mtime, stamp, parsed = _cache_get(path, max_prompts)
+        if mtime <= 0:
+            continue
+        mtime_dt = datetime.fromtimestamp(mtime, UTC)
+        if mtime_dt < cutoff:  # 初筛：内容事件时间必然 ≤ mtime
+            continue
+        if parsed is None:
+            parsed = _parse_kimi(path, max_prompts)
+            if parsed is None:
+                continue
+            if stamp is not None:
+                _cache_put(path, max_prompts, parsed, stamp)
+        if not parsed.prompts or parsed.session_id in seen:
+            continue
+        last_activity = parsed.last_event or mtime_dt
+        if last_activity < cutoff:
+            continue
+        seen.add(parsed.session_id)
+        sessions.append(LiveSession(
+            agent_id="kimi",
+            session_id=parsed.session_id,
+            project=parsed.project,
+            last_activity=last_activity,
+            state=_infer_state(now, last_activity, parsed.pending_tool,
+                               _heartbeat_fresh(heartbeat, parsed.session_id, now)),
+            prompts=parsed.prompts,
+            model=parsed.model,
+            terminal=term_map.get(parsed.session_id) or {},
+            next_hint=parsed.next_hint,
+        ))
+    return sessions
+
+
+def _parse_kimi(path: Path, max_prompts: int | None) -> _Parsed | None:
+    # 布局：…/sessions/<wd_*>/<session_*>/agents/main/wire.jsonl；state.json 在会话目录下
+    session_dir = path.parents[2]
+    state = _KimiParseState(session_id=session_dir.name, project=_kimi_project(session_dir))
+    for data in iter_jsonl_dicts(path):
+        ts = _parse_epoch_ms(data.get("time"))
+        if ts and (state.last_event is None or ts > state.last_event):
+            state.last_event = ts
+        dtype = data.get("type")
+        if dtype == "turn.prompt":
+            _consume_kimi_prompt(data, ts, state)
+        elif dtype == "usage.record":
+            model = data.get("model")
+            if isinstance(model, str) and model:
+                state.model = model
+        elif dtype == "context.append_loop_event":
+            event = data.get("event")
+            if isinstance(event, dict):
+                _consume_kimi_loop_event(event, state)
+    if not state.prompts:
+        return None
+    prompts = state.prompts if max_prompts is None else state.prompts[-max_prompts:]
+    return _Parsed(state.session_id, state.project, prompts, bool(state.pending_calls), state.model,
+                   next_hint=state.pending_question or _hint_text(state.last_reply),
+                   last_event=state.last_event)
+
+
+def _kimi_project(session_dir: Path) -> str:
+    """会话目录的 state.json → workDir → 项目名；读不到回退 wd_<name>_<hash> 目录名。"""
+    try:
+        with open(session_dir / "state.json", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    work_dir = data.get("workDir") if isinstance(data, dict) else None
+    if isinstance(work_dir, str) and work_dir:
+        return project_from_cwd(work_dir)
+    match = re.fullmatch(r"wd_(.+)_[0-9a-f]{6,}", session_dir.parent.name)
+    return match.group(1) if match else "unknown"
+
+
+def _consume_kimi_prompt(data: dict, ts: datetime | None, state: _KimiParseState) -> None:
+    origin = data.get("origin")
+    if not isinstance(origin, dict) or origin.get("kind") != "user":
+        return  # goal/cron 等非人敲来源不算提示词
+    parts = [p.get("text", "") for p in (data.get("input") or [])
+             if isinstance(p, dict) and p.get("type") == "text"]
+    kept = [frag for frag in (p.strip() for p in parts)
+            if frag and not frag.startswith(_KIMI_SKIP_PREFIXES) and not _SLASH_COMMAND_RE.match(frag)]
+    if not kept:
+        return
+    state.pending_question = ""  # 回答/新提示，提问已被消费
+    state.prompts.append(Prompt(text="\n".join(kept), timestamp=ts))
+
+
+def _consume_kimi_loop_event(event: dict, state: _KimiParseState) -> None:
+    event_type = event.get("type")
+    if event_type == "content.part":
+        part = event.get("part")
+        if isinstance(part, dict) and part.get("type") == "text":
+            text = part.get("text") or ""
+            if text.strip():
+                state.last_reply = text
+    elif event_type == "tool.call":
+        call_id = event.get("toolCallId")
+        if isinstance(call_id, str) and call_id:
+            state.pending_calls.add(call_id)
+        if event.get("name") == "AskUserQuestion":
+            question = _format_question(event.get("args") or {})
+            state.pending_question = question or state.pending_question
+    elif event_type == "tool.result":
+        call_id = event.get("toolCallId")
+        if isinstance(call_id, str):
+            state.pending_calls.discard(call_id)
+
+
+def _parse_epoch_ms(raw: object) -> datetime | None:
+    """Kimi wire 事件时间是 epoch 毫秒（int）。"""
+    if not isinstance(raw, (int, float)):
+        return None
+    try:
+        return datetime.fromtimestamp(raw / 1000, UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 _HINT_MAX_LINES = 5   # 「下一步」显示上限（AskUserQuestion 格式化路径用；打分路径上限 3）

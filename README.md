@@ -93,7 +93,7 @@ Codex 官方暂不支持自定义 StatusLine。Token Tracker 通过 hook 注入�
 
 在终端分屏 / tmux 窄窗格里常驻，一屏总览本机所有 AI 会话：
 
-- **活跃会话列表** — 过去 5h 内有动静的会话（Claude Code + Codex），按最近活动排序取前 10；头行显示状态灯、`项目名(分支)`、agent、模型与距上次活动时间
+- **活跃会话列表** — 过去 5h 内有动静的会话（Claude Code + Codex + Kimi Code），按最近活动排序取前 10；头行显示状态灯、`项目名(分支)`、agent、模型与距上次活动时间
 - **三地时钟** — 北京、洛杉矶、伦敦合并为一行，只显示城市与 `HH:MM`
 - **提示词历史** — 运行中、待确认、等输入会话保留最近 5 条，历史最多 1 行、最新最多 2 行；空闲会话只显示最新 1 条，不显示「下一步」
 - **状态灯** — 运行中（星形动画）/ 需要关注（工具调用无结果，大概率在等授权）/ 等输入 / 空闲
@@ -116,6 +116,19 @@ $tt-sidebar
 - `tt setup` 把 Codex 的伪 statusline `Stop` 与 sidebar `UserPromptSubmit` 统一安装到用户级 `hooks.json`；后者用本地 FIFO 把新提示词推给已打开的分屏，无 sidebar 时立即返回，不轮询 transcript、不上传或持久化提示词。
 - Codex 会要求审查非托管 Hook：安装后运行 `/hooks`，信任 Token Tracker 对应项。Skill 未立即出现时重启 Codex。
 - `tt unsetup` 会一并移除 Token Tracker 管理的 Skill 与 Hook；若 `~/.agents/skills/tt-sidebar` 已是用户自己的同名 Skill，安装与卸载都不会覆盖它。
+
+### Kimi Code 当前会话自动 1/3 分屏（`/skill:tt-sidebar`）
+
+`tt setup` 同样会把 `tt-sidebar` 安装为 Kimi Code 用户级 Skill（`~/.kimi-code/skills/tt-sidebar`），并在 `~/.kimi-code/config.toml` 追加一条 `UserPromptSubmit` hook（只追加 / 替换 tt 自己的托管块，用户其它配置原样保留）。行为与 Codex 版一致：当前会话右侧 1/3 宽度分屏，完整提示词实时倒序展示。
+
+在 Kimi Code 输入：
+
+```text
+/skill:tt-sidebar
+```
+
+- 支持 iTerm2 与 tmux；iTerm2 的 macOS「自动化」授权提示属预期。Kimi 会话内没有会话 ID 环境变量，启动器按「workDir 等于当前目录、最近更新」定位当前会话。
+- hook 同样走本地 FIFO 推送，无 sidebar 时立即返回；新会话生效，`tt unsetup` 一并移除。
 
 ## 安装
 

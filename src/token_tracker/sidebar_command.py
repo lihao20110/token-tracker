@@ -12,6 +12,7 @@ import os
 import shlex
 import subprocess
 import sys
+from pathlib import Path
 
 _SPLIT_OK = "tt_sidebar_split_ok"
 _PROCESS_TIMEOUT = 25
@@ -22,8 +23,33 @@ def _current_session_id() -> str:
         os.environ.get("TT_SIDEBAR_SESSION_ID")
         or os.environ.get("CODEX_THREAD_ID")
         or os.environ.get("CLAUDE_SESSION_ID")
-        or ""
+        or _kimi_session_id_for_cwd()
     ).strip()
+
+
+def _kimi_session_id_for_cwd() -> str:
+    """Kimi 会话内没有 session id 环境变量（实测），回退：取 workDir 等于当前目录、
+    state.json updatedAt 最新的那个 Kimi 会话。用户刚提交提示词触发 Skill，该会话必是最新。"""
+    from datetime import datetime
+
+    from .adapters.util import kimi_home
+
+    cwd = os.getcwd()
+    best_id, best_ts = "", None
+    for state_path in (Path(kimi_home()) / "sessions").glob("*/session_*/state.json"):
+        try:
+            data = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict) or data.get("workDir") != cwd:
+            continue
+        try:
+            ts = datetime.fromisoformat(str(data.get("updatedAt", "")).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if best_ts is None or ts > best_ts:
+            best_id, best_ts = state_path.parent.name, ts
+    return best_id
 
 
 def _module_argv(action: str, *args: str) -> list[str]:
@@ -82,7 +108,7 @@ def open_split() -> int:
     try:
         tracked_session_id = _current_session_id()
         if not tracked_session_id:
-            print("无法识别当前 Claude Code / Codex 会话 ID。", file=sys.stderr)
+            print("无法识别当前 Claude Code / Codex / Kimi Code 会话 ID。", file=sys.stderr)
             return 1
         if pane := os.environ.get("TMUX_PANE"):
             ok, message = _open_tmux(pane, tracked_session_id)
@@ -100,14 +126,15 @@ def open_split() -> int:
 
 
 def current_sessions(session_id: str):
-    """按会话 ID 精确过滤，并保留目标会话的全部提示词。"""
+    """按会话 ID 精确过滤，并保留目标会话的全部提示词。不限 agent——
+    CC / Codex / Kimi 的 split 都走这里，按 session_id 过滤后天然只剩目标会话。"""
     from .sidebar import scan_sessions
     from .ui.sidebar import SPLIT_PROMPT_LIMIT
 
     return [
         session
         for session in scan_sessions(
-            agent_ids={"codex"}, max_sessions=1000, max_prompts=SPLIT_PROMPT_LIMIT
+            agent_ids=None, max_sessions=1000, max_prompts=SPLIT_PROMPT_LIMIT
         )
         if session.session_id == session_id
     ]
@@ -142,7 +169,7 @@ def run_current(session_id: str, once: bool = False) -> int:
 
 
 def run_prompt_hook(agent_id: str) -> int:
-    """把 Codex / Claude Code 的 UserPromptSubmit stdin 尽力推送到当前 split。"""
+    """把 Codex / Claude Code / Kimi 的 UserPromptSubmit stdin 尽力推送到当前 split。"""
     from . import config
     from .sidebar_events import prompt_event_from_hook, send_prompt_event
 
@@ -164,7 +191,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     current.add_argument("session_id")
     current.add_argument("--once", action="store_true")
     prompt_hook = subparsers.add_parser("prompt-hook")
-    prompt_hook.add_argument("--agent", choices=("claude-code", "codex"), required=True)
+    prompt_hook.add_argument("--agent", choices=("claude-code", "codex", "kimi"), required=True)
     return parser.parse_args(argv)
 
 
