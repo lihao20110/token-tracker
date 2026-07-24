@@ -151,7 +151,7 @@ curl -sSL https://raw.githubusercontent.com/stormzhang/token-tracker/main/instal
 ## 使用
 
 ```bash
-tt setup          # 配置状态栏，并安装 Codex $tt-sidebar Skill / 提示词 Hook
+tt setup          # 配置状态栏，并安装 Codex / Kimi Code 的 tt-sidebar Skill / 提示词 Hook
 tt                # 过去一年 token 热力图 + 顶部三段概览（= tt daily）
 tt daily          # 同上（tt 无参即进 daily）
 tt status         # 今日消耗、5h/7d 额度与今日会话

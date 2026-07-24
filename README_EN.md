@@ -14,7 +14,7 @@ Custom StatusLine integration + CLI Dashboard — see token usage, cost, and rat
 
 - **Unified multi-agent tracking** — Claude Code + Codex in one place, grouped by source
 - **Status line integration** — Claude Code via official StatusLine API; **Codex industry-first faux statusline** (hook-injected two-line truecolor status — bringing an official-unsupported capability to Codex)
-- **Live sidebar** — `tt sidebar` shows all active sessions; `$tt-sidebar` opens a current-Codex-session-only pane on the right at one-third width
+- **Live sidebar** — `tt sidebar` shows all active sessions (Claude Code + Codex + Kimi Code); `$tt-sidebar` in Codex or `/skill:tt-sidebar` in Kimi Code opens a current-session-only pane on the right at one-third width
 - **Rate limit monitoring** — real-time 5h / 7d quota usage with reset countdown
 - **Multi-dimensional cost analysis** — per-session, daily, weekly, monthly cost breakdown
 - **Pricing resolution** — litellm live pricing + built-in official-price fallback, covering Claude / OpenAI / Gemini / Grok and major Chinese models (Kimi / GLM / Qwen / Doubao / DeepSeek / MiniMax / MiMo); new family members auto-priced, never silently $0
@@ -72,9 +72,11 @@ Renders 24-bit truecolor, **does not enter the model context** (verified), and *
 
 ## Live Sidebar
 
-Run `tt sidebar` in a narrow terminal pane for an all-session overview. In Codex, explicitly invoke `$tt-sidebar` to automatically open a separate right-side pane at one-third width containing only the current session's complete prompt history, newest first.
+Run `tt sidebar` in a narrow terminal pane for an all-session overview. In Codex, explicitly invoke `$tt-sidebar` (in Kimi Code: `/skill:tt-sidebar`) to automatically open a separate right-side pane at one-third width containing only the current session's complete prompt history, newest first.
 
 `tt setup` installs the user-level Skill and keeps the faux-statusline `Stop` plus sidebar `UserPromptSubmit` hooks together in the user-level `hooks.json`. Review and trust new or changed Token Tracker hooks with `/hooks`; restart Codex if the new Skill does not appear immediately. The prompt hook only attempts a local FIFO write while a matching sidebar is open—there is no transcript polling, prompt persistence, or upload. iTerm2 no longer requires its Python API; if macOS requests Automation access on first use, allow the app running Codex / `tt` to control iTerm2. tmux remains supported. Native iTerm2 full screen rejects AppleScript column resizing, so exit full screen before invoking the Skill. `tt unsetup` removes the managed Skill and hooks without overwriting a user-owned skill of the same name.
+
+For Kimi Code, `tt setup` installs the Skill to `~/.kimi-code/skills/tt-sidebar` and appends a managed `UserPromptSubmit` entry to the `[[hooks]]` array in `~/.kimi-code/config.toml` (only Token Tracker's own block is added or replaced; all other user config is preserved; the FIFO behavior matches Codex). Kimi Code sessions expose no session-id environment variable, so the launcher locates the current session as the most recently updated session whose `workDir` equals the current directory. The hook takes effect in new sessions.
 
 ## Reports at a Glance
 
@@ -115,7 +117,7 @@ curl -sSL https://raw.githubusercontent.com/stormzhang/token-tracker/main/instal
 ## Usage
 
 ```bash
-tt setup          # configure status lines and install the Codex $tt-sidebar Skill / hooks
+tt setup          # configure status lines and install the Codex / Kimi Code tt-sidebar Skill / hooks
 tt                # last-12-months heatmap + top tri-section overview (= tt daily)
 tt daily          # same (tt with no args enters daily)
 tt status         # last-5h real-time panel
