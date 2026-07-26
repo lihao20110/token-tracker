@@ -7,6 +7,7 @@ import json
 import os
 import re
 import select
+import socket
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -37,6 +38,12 @@ def prompt_fifo_path(session_id: str, channel_dir: str | os.PathLike[str]) -> st
     digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:20]
     uid = getattr(os, "getuid", lambda: 0)()
     return str(Path(channel_dir) / f".tt-sidebar-{uid}-{digest}.fifo")
+
+
+def prompt_socket_port(session_id: str) -> int:
+    """Windows fallback: a deterministic loopback port scoped to a session."""
+    digest = hashlib.sha256(session_id.encode("utf-8")).digest()
+    return 49152 + int.from_bytes(digest[:2], "big") % 16384
 
 
 def prompt_event_from_hook(data: Any, agent_id: str) -> PromptEvent | None:
@@ -97,14 +104,21 @@ def send_prompt_event(
     timeout: float = 0.2,
     channel_dir: str | os.PathLike[str] = ".",
 ) -> bool:
-    """尽力推送，不启动 sidebar、不落盘；sidebar 未运行时立即返回 False。"""
+    """Best-effort local delivery; never creates a listener or persists a prompt."""
     payload = encode_prompt_event(event)
     if len(payload) > MAX_EVENT_BYTES:
         return False
     frame = len(payload).to_bytes(4, "big") + payload
+    if os.name == "nt":
+        try:
+            with socket.create_connection(("127.0.0.1", prompt_socket_port(event.session_id)), timeout=timeout) as conn:
+                conn.sendall(frame)
+            return True
+        except OSError:
+            return False
     fd: int | None = None
     try:
-        fd = os.open(prompt_fifo_path(event.session_id, channel_dir), os.O_WRONLY | os.O_NONBLOCK)
+        fd = os.open(prompt_fifo_path(event.session_id, channel_dir), os.O_WRONLY | os.O_NONBLOCK)  # type: ignore[attr-defined]
         sent = 0
         deadline = time.monotonic() + timeout
         while sent < len(frame):

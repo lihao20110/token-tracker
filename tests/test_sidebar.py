@@ -348,9 +348,12 @@ def test_alive_pids_own_process_and_start_time_guard():
     assert sidebar._alive_pids({me: 0.0}) == set()
     # 与真实启动时刻一致（epoch 比对，不受 TZ 环境变量影响——procStart 字符串
     # 按 CC 的时区渲染、ps lstart 按本进程 TZ 渲染，字符串比对会全军覆没）→ 存活
-    lstart = subprocess.run(["ps", "-o", "lstart=", "-p", str(me)],
-                            capture_output=True, text=True).stdout.strip()
-    real_start = sidebar._parse_lstart(" ".join(lstart.split()))
+    if os.name == "nt":
+        real_start = sidebar._windows_process_start_time(me)
+    else:
+        lstart = subprocess.run(["ps", "-o", "lstart=", "-p", str(me)],
+                                capture_output=True, text=True).stdout.strip()
+        real_start = sidebar._parse_lstart(" ".join(lstart.split()))
     assert real_start is not None
     assert me in sidebar._alive_pids({me: real_start})
 

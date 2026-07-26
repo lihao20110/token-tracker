@@ -23,6 +23,8 @@ STATUS_FILE = os.path.join(CONFIG_DIR, "tt-status.json")
 # Codex Stop hook 采集的会话→终端窗格映射。与 CC 心跳/status 缓存分文件，避免两个
 # Agent 并发 read-modify-write 同一 JSON 时互相覆盖；sidebar 读取时再合并。
 TERMINAL_MAP_FILE = os.path.join(CONFIG_DIR, "tt-terminal-map.json")
+# Kimi Code Stop hook 心跳（kimi-heartbeat 子命令写、kimi-watch 读，点亮「运行中」）
+KIMI_HEARTBEAT_FILE = os.path.join(CONFIG_DIR, "kimi-heartbeat.json")
 SCHEMA_VERSION = 1
 
 # 引导版本：每次新增"值得让老用户重新走一遍 setup"的配置项时手动 +1（只能整数、一次 +1）。

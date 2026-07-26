@@ -1,6 +1,6 @@
 # Token Tracker
 
-Track token usage across local AI agents. Supports **Claude Code** and **Codex**.
+Track token usage across local AI agents. Supports **Claude Code**, **Codex** and **Kimi Code**.
 
 Custom StatusLine integration + CLI Dashboard — see token usage, cost, and rate limits at a glance.
 
@@ -12,8 +12,8 @@ Custom StatusLine integration + CLI Dashboard — see token usage, cost, and rat
 
 ## Highlights
 
-- **Unified multi-agent tracking** — Claude Code + Codex in one place, grouped by source
-- **Status line integration** — Claude Code via official StatusLine API; **Codex industry-first faux statusline** (hook-injected two-line truecolor status — bringing an official-unsupported capability to Codex)
+- **Unified multi-agent tracking** — Claude Code + Codex + Kimi Code in one place, grouped by source
+- **Status line integration** — Claude Code via official StatusLine API; **Codex industry-first faux statusline** (hook-injected two-line truecolor status — bringing an official-unsupported capability to Codex); Kimi Code has no TUI injection channel (verified), so it gets the `tt kimi-watch` always-on live pane instead (see below)
 - **Live sidebar** — `tt sidebar` shows all active sessions; `$tt-sidebar` opens a current-Codex-session-only pane on the right at one-third width
 - **Rate limit monitoring** — real-time 5h / 7d quota usage with reset countdown
 - **Multi-dimensional cost analysis** — per-session, daily, weekly, monthly cost breakdown
@@ -70,6 +70,17 @@ Codex doesn't yet support custom StatusLine. Token Tracker injects a **faux stat
 
 Renders 24-bit truecolor, **does not enter the model context** (verified), and **follows the current theme** (same source as the CLI reports / CC status line; `tt theme` switches all three together). `tt unsetup` removes it.
 
+### Kimi Code (`tt kimi-watch` always-on live pane)
+
+Kimi Code's TUI is a fullscreen app with **no** official StatusLine API and no Codex-style `systemMessage` hook channel (both verified) — hook stdout would only pollute the model context. So Kimi Code gets a **dedicated live pane** instead:
+
+- **Six lines**: 1. active sessions; 2. 5h quota and reset countdown; 3. 7d quota and reset countdown; 4-6. today's `in`, `out`, and `cache` totals on separate lines, with estimated cost and current-session totals on the cache line
+- **Refresh**: local `wire.jsonl` rescanned every 2s (mtime prefilter); quota polled every 60s via the official `usages` query API (read-only, costs no model quota; keeps last value marked stale on failure)
+- **Same-window pane**: explicit `tt setup` installs the Kimi `Stop` heartbeat hook and a Windows Terminal pane action. In **Windows Terminal**, press `Ctrl+Alt+K` inside the Kimi tab to open `kimi-watch` in a right 20% pane; on other terminals run `tt kimi-watch` manually; `--once` prints one snapshot.
+- **Reports included**: Kimi Code sessions (subagents included) flow into `tt daily / weekly / monthly / sessions / status`; filter with `--kimi`
+
+`tt unsetup` removes the hooks and the managed Windows Terminal action. Versus `/usage`: `/usage` is a manual one-shot snapshot; kimi-watch is always-on live plus a historical cost ledger.
+
 ## Live Sidebar
 
 Run `tt sidebar` in a narrow terminal pane for an all-session overview. In Codex, explicitly invoke `$tt-sidebar` to automatically open a separate right-side pane at one-third width containing only the current session's complete prompt history, newest first.
@@ -112,10 +123,24 @@ pip uninstall token-tracker
 curl -sSL https://raw.githubusercontent.com/stormzhang/token-tracker/main/install.sh | bash
 ```
 
+
+## Local quick deployment (from source)
+
+For a local checkout used for verification or day-to-day running:
+
+```bash
+git clone https://github.com/stormzhang/token-tracker.git
+cd token-tracker
+python -m pip install -e .
+tt setup
+```
+
+After updating the checkout, run `git pull`, `python -m pip install -e .`, and `tt setup` in that order. The final command synchronizes Agent hooks and the Windows Terminal pane shortcut.
+
 ## Usage
 
 ```bash
-tt setup          # configure status lines and install the Codex $tt-sidebar Skill / hooks
+tt setup          # configure status lines, Codex $tt-sidebar Skill / hooks, and the Kimi Stop heartbeat hook / Windows Terminal pane action
 tt                # last-12-months heatmap + top tri-section overview (= tt daily)
 tt daily          # same (tt with no args enters daily)
 tt status         # last-5h real-time panel
@@ -123,12 +148,13 @@ tt weekly         # weekly report
 tt monthly        # monthly report
 tt sessions       # last 20 session details (tt sessions <n> to change count, --sort to change order)
 tt sidebar        # live all-session sidebar (--once prints one frame and exits)
+tt kimi-watch     # Kimi Code always-on live pane (--once prints one frame and exits)
 tt theme          # view / switch color theme (show / list / set / preview)
 tt unsetup        # uninstall and restore previous config
 tt --version      # show version (-v / -V)
 ```
 
-> In multi-agent setups, add `--claude` or `--codex` (mutually exclusive) to filter any report to a single agent — works for `status` / `daily` / `weekly` / `monthly` / `sessions`. E.g. `tt daily --codex` renders only the Codex heatmap. Inside an agent session, `daily` / `weekly` already auto-follow the current agent; the explicit flag overrides that.
+> In multi-agent setups, add `--claude`, `--codex`, or `--kimi` (mutually exclusive) to filter any report to a single agent - works for `status` / `daily` / `weekly` / `monthly` / `sessions`. E.g. `tt daily --kimi` renders only the Kimi Code heatmap. Inside an agent session, `daily` / `weekly` already auto-follow the current agent; the explicit flag overrides that.
 
 > 💡 `tt daily` is a GitHub-style token contribution heatmap (shaded green cells). In a Claude Code session, type `!tt daily` to see it in full color — commands you run yourself with `!` have their 24-bit true-color output rendered.
 
@@ -185,10 +211,11 @@ Available sort fields: `tokens` / `cost` / `messages` / `time` / `input` / `outp
 |-------|------|--------|
 | Claude Code | `~/.claude/projects/*/` | JSONL (per-message usage) |
 | Codex | `~/.codex/sessions/` | JSONL + SQLite |
+| Kimi Code | `~/.kimi-code/sessions/`, `~/.kimi-code/credentials/` | `wire.jsonl` (`usage.record`) + official `usages` query API (quota) |
 
-Cross-platform paths: on Windows `~` resolves to `%USERPROFILE%`. Honors `CLAUDE_CONFIG_DIR` / `CODEX_HOME` (the official custom-directory env vars) when set.
+Cross-platform paths: on Windows `~` resolves to `%USERPROFILE%`. Honors `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `KIMI_CODE_HOME` (the official custom-directory env vars) when set.
 
-Token Tracker is **read-only** — it never modifies any agent data.
+Token Tracker is **read-only** - it never modifies agent data. The only exception is an expired Kimi Code OAuth access token: it is refreshed with the refresh token and atomically written back to the original credential file, matching the CLI's own rotating-refresh-token flow.
 
 ## Requirements
 

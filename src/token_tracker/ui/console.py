@@ -7,10 +7,29 @@
 
 import contextlib
 import os
+import sys
 from collections.abc import Iterator
 from io import StringIO
 
 from rich.console import Console
+
+
+def _platform_name() -> str:
+    return os.name
+
+
+def _configure_windows_stdout_utf8() -> None:
+    """Prevent Rich Unicode glyphs from failing on a legacy Windows code page."""
+    if _platform_name() != "nt":
+        return
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if not callable(reconfigure):
+        return
+    try:
+        reconfigure(encoding="utf-8", errors="replace")
+    except OSError:
+        pass
+
 
 _console = Console()
 
@@ -68,7 +87,7 @@ def _forced_width() -> int | None:
         try:
             fd = os.open(path, os.O_RDONLY)
             try:
-                _, cols, _, _ = struct.unpack("HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))
+                _, cols, _, _ = struct.unpack("HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))  # type: ignore[attr-defined]
             finally:
                 os.close(fd)
         except OSError:

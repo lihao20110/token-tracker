@@ -2,7 +2,7 @@ import os
 import time
 from datetime import UTC, datetime, timedelta
 
-from token_tracker.adapters import claude, codex
+from token_tracker.adapters import claude, codex, util
 from token_tracker.adapters.util import file_may_have_events_since, project_from_cwd
 
 
@@ -32,10 +32,11 @@ def test_project_from_cwd_git_file(tmp_path):
     assert project_from_cwd(str(repo / "sub")) == "myrepo"
 
 
-def test_project_from_cwd_non_git_fallback(tmp_path):
-    # 非 git 目录 → 回退最后一段
+def test_project_from_cwd_non_git_fallback(tmp_path, monkeypatch):
+    # tmp can sit under this repository; simulate a path with no ancestor .git.
     d = tmp_path / "loose" / "folder"
     d.mkdir(parents=True)
+    monkeypatch.setattr(util.os.path, "exists", lambda _path: False)
     assert project_from_cwd(str(d)) == "folder"
 
 

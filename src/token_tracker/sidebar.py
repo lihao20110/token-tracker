@@ -14,6 +14,7 @@
 hooks 事件流（PermissionRequest 等授权的精确信号）留 v2 接入；当前状态为启发式推断。
 """
 
+import ctypes
 import json
 import os
 import re
@@ -258,6 +259,8 @@ def _alive_pids(want: dict[int, float | None]) -> set[int]:
     """
     if not want:
         return set()
+    if os.name == "nt":
+        return _alive_windows_pids(want)
     try:
         out = subprocess.run(
             ["ps", "-o", "pid=,lstart=", "-p", ",".join(str(p) for p in want)],
@@ -277,6 +280,44 @@ def _alive_pids(want: dict[int, float | None]) -> set[int]:
             continue
         alive.add(pid)
     return alive
+
+
+def _alive_windows_pids(want: dict[int, float | None]) -> set[int]:
+    """Validate Windows process creation times with GetProcessTimes to reject reused PIDs."""
+    alive: set[int] = set()
+    for pid, expected in want.items():
+        actual = _windows_process_start_time(pid)
+        if actual is None:
+            if expected is None and _pid_exists(pid):
+                alive.add(pid)
+            continue
+        if expected is None or abs(actual - expected) <= _START_TOLERANCE_S:
+            alive.add(pid)
+    return alive
+
+
+def _windows_process_start_time(pid: int) -> float | None:
+    """Return a Windows process creation timestamp in epoch seconds, or None when unavailable."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    try:
+        creation = ctypes.c_ulonglong()
+        exit_time = ctypes.c_ulonglong()
+        kernel_time = ctypes.c_ulonglong()
+        user_time = ctypes.c_ulonglong()
+        if not kernel32.GetProcessTimes(
+            handle,
+            ctypes.byref(creation),
+            ctypes.byref(exit_time),
+            ctypes.byref(kernel_time),
+            ctypes.byref(user_time),
+        ):
+            return None
+        return creation.value / 10_000_000 - 11_644_473_600
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def _parse_lstart(raw: str) -> float | None:

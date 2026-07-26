@@ -60,7 +60,7 @@ def _run_statusline(script_path, project_dir):
     # 不隔离会把真实文件覆盖成无 session_id 的测试帧（曾把 _tps_state/_terminal_map 反复清空）
     env = dict(os.environ, HOME=os.path.dirname(str(script_path)))
     r = subprocess.run([sys.executable, str(script_path)], input=json.dumps(data),
-                       text=True, capture_output=True, env=env)
+                       text=True, capture_output=True, env=env, encoding="utf-8")
     return r.stdout.splitlines()[0] if r.stdout.strip() else ""
 
 
@@ -78,7 +78,7 @@ def test_statusline_records_terminal_map(tmp_path):
     # HOME 重定向到 tmp，脚本的 STATUS_FILE(~/.config/...) 随之落在临时目录、不碰真实文件。
     script = tmp_path / "tt-statusline.py"
     script.write_text(hooks._render_hook_script(), encoding="utf-8")
-    env = dict(os.environ, HOME=str(tmp_path),
+    env = dict(os.environ, HOME=str(tmp_path), USERPROFILE=str(tmp_path),
                ITERM_SESSION_ID="w0t1p0:AAA-111", TMUX_PANE="%7", COLUMNS="120")
 
     def _run(session_id):
@@ -185,7 +185,7 @@ def test_codex_statusline_records_terminal_map_without_touching_cc_status(tmp_pa
     status_path = cfg / "tt-status.json"
     status_path.write_text(json.dumps({"session_id": "claude-live", "rate_limits": {"five_hour": 12}}),
                            encoding="utf-8")
-    env = dict(os.environ, HOME=str(tmp_path), ITERM_SESSION_ID="w0t1p0:AAA-111", TMUX_PANE="%7")
+    env = dict(os.environ, HOME=str(tmp_path), USERPROFILE=str(tmp_path), ITERM_SESSION_ID="w0t1p0:AAA-111", TMUX_PANE="%7")
 
     def _run(session_id):
         rollout = tmp_path / f"{session_id or 'missing'}.jsonl"
@@ -300,7 +300,7 @@ def test_codex_hooks_update_migrates_inline_and_refreshes_both_commands(tmp_path
     monkeypatch.setattr(sidebar_install, "CODEX_HOOKS", str(codex_hooks))
     monkeypatch.setattr(sidebar_install, "SIDEBAR_SKILL_DIR", str(tmp_path / "tt-sidebar"))
     monkeypatch.setattr(hooks.sys, "executable", "/new/python3")
-    monkeypatch.setattr(hooks.os, "name", "posix")
+    monkeypatch.setattr(hooks, "_platform_name", lambda: "posix")
     config.save_codex_faux_statusline(True)
     config.save_setup_version(config.SETUP_VERSION)
     script.write_text(hooks._render_codex_statusline_hook(), encoding="utf-8")
@@ -341,7 +341,7 @@ def test_codex_hooks_corrupt_json_keeps_inline_stop(tmp_path, monkeypatch, capsy
     assert not hooks._sync_codex_managed_hooks(quiet=True)
     assert codex_config.read_text(encoding="utf-8") == original
     assert codex_hooks.read_text(encoding="utf-8") == "{broken"
-    assert "hooks.json" in capsys.readouterr().out
+    assert "hooks.json" in capsys.readouterr().out.replace("\n", "")
 
 
 def test_codex_statusline_windows_path_is_json_safe(tmp_path, monkeypatch):
@@ -353,7 +353,7 @@ def test_codex_statusline_windows_path_is_json_safe(tmp_path, monkeypatch):
         "CODEX_STATUSLINE_HOOK_PATH",
         r"C:\Users\test\.config\token-tracker\codex-statusline.py",
     )
-    monkeypatch.setattr(hooks.os, "name", "nt")
+    monkeypatch.setattr(hooks, "_platform_name", lambda: "nt")
     command = hooks._codex_statusline_command(r"C:\Program Files\Python313\python.exe")
     assert command == (
         '"C:/Program Files/Python313/python.exe" '
@@ -424,7 +424,7 @@ def test_setup_claude_corrupt_settings_no_crash_no_clobber(tmp_path, monkeypatch
     hooks._setup_claude(hooks.SetupComponents(), quiet=True)  # 不抛异常
     assert settings_path.read_text(encoding="utf-8") == '{"statusLine": broken'  # 原样保留
     assert not (tmp_path / "claude-statusline.py").exists()  # 早退，未落任何文件
-    assert "settings.json" in capsys.readouterr().out  # quiet 也要出声（错误不可静默）
+    assert "settings.json" in capsys.readouterr().out.replace("\n", "")  # quiet 也要出声（错误不可静默）
 
 
 def test_unsetup_claude_corrupt_settings_no_crash(tmp_path, monkeypatch, capsys):
@@ -437,7 +437,7 @@ def test_unsetup_claude_corrupt_settings_no_crash(tmp_path, monkeypatch, capsys)
 
     hooks._unsetup_claude()  # 不抛异常
     assert settings_path.read_text(encoding="utf-8") == "not json at all"
-    assert "settings.json" in capsys.readouterr().out
+    assert "settings.json" in capsys.readouterr().out.replace("\n", "")
 
 
 def test_unsetup_claude_corrupt_backup_removes_statusline(tmp_path, monkeypatch):
@@ -469,8 +469,8 @@ def test_cli_setup_wizard_or_auto(monkeypatch):
     from types import SimpleNamespace
     monkeypatch.setattr(cli, "detect_agents",
                         lambda: [SimpleNamespace(name="Claude Code", id="claude-code")])  # 有 agent
-    monkeypatch.setattr(wizard, "run_wizard", lambda: calls.__setitem__("wizard", True))
-    monkeypatch.setattr(cli, "_auto_setup", lambda: calls.__setitem__("auto", True))
+    monkeypatch.setattr(wizard, "run_wizard", lambda **_: calls.__setitem__("wizard", True))
+    monkeypatch.setattr(cli, "_auto_setup", lambda **_: calls.__setitem__("auto", True))
     monkeypatch.setattr(cli, "is_setup", lambda: True)
     monkeypatch.setattr(cli, "needs_update", lambda: False)
     monkeypatch.setattr("sys.argv", ["tt", "setup"])
@@ -490,8 +490,8 @@ def test_cli_setup_flow_no_agent(monkeypatch):
     from token_tracker import cli, wizard
     calls: dict = {}
     monkeypatch.setattr(cli, "detect_agents", lambda: [])  # 没装 agent
-    monkeypatch.setattr(wizard, "run_wizard", lambda: calls.__setitem__("wizard", True))
-    monkeypatch.setattr(cli, "_auto_setup", lambda: calls.__setitem__("auto", True))
+    monkeypatch.setattr(wizard, "run_wizard", lambda **_: calls.__setitem__("wizard", True))
+    monkeypatch.setattr(cli, "_auto_setup", lambda **_: calls.__setitem__("auto", True))
     monkeypatch.setattr(cli, "is_setup", lambda: False)
     monkeypatch.setattr(cli, "needs_update", lambda: False)
     monkeypatch.setattr("sys.argv", ["tt", "setup"])
@@ -554,9 +554,9 @@ def test_statusline_shows_git_diff_stat(tmp_path):
 
 def _run_statusline_home(script_path, payload, home):
     """隔离 HOME 下跑落盘 statusline 脚本，返回完整 stdout（不污染真实 ~/.claude）。"""
-    env = {**os.environ, "HOME": str(home), "COLORTERM": "truecolor"}
+    env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home), "COLORTERM": "truecolor"}
     r = subprocess.run([sys.executable, str(script_path)], input=json.dumps(payload),
-                       text=True, capture_output=True, env=env)
+                       text=True, capture_output=True, env=env, encoding="utf-8")
     return r.stdout
 
 
@@ -814,7 +814,7 @@ def test_cli_setup_up_to_date_skips_flow(monkeypatch, tmp_path):
 def test_build_cc_command_windows_quotes_and_slashes(monkeypatch):
     # issue #13/#14：Windows 上 statusLine command 必须正斜杠 + 引号包裹，
     # 否则 CC 走 Git Bash 执行时反斜杠被吞，状态栏静默空白。
-    monkeypatch.setattr(hooks.os, "name", "nt")
+    monkeypatch.setattr(hooks, "_platform_name", lambda: "nt")
     cmd = hooks._build_cc_command(
         r"C:\Users\X\pipx\venvs\token-tracker\Scripts\python.exe",
         r"C:\Users\X\.config\token-tracker\claude-statusline.py",
@@ -826,7 +826,7 @@ def test_build_cc_command_windows_quotes_and_slashes(monkeypatch):
 
 def test_build_cc_command_unix_always_quoted(monkeypatch):
     # Unix 平台不转换路径分隔符，但始终加引号（防路径含空格断词）。
-    monkeypatch.setattr(hooks.os, "name", "posix")
+    monkeypatch.setattr(hooks, "_platform_name", lambda: "posix")
     cmd = hooks._build_cc_command(
         "/Users/John Doe/.local/share/uv/tools/token-tracker/bin/python3",
         "/Users/John Doe/.config/token-tracker/claude-statusline.py",
@@ -837,11 +837,11 @@ def test_build_cc_command_unix_always_quoted(monkeypatch):
 
 def test_cc_command_outdated_detects_legacy_format(monkeypatch):
     # 旧格式（裸拼接、无引号）应被检测为过时；新格式不动。
-    monkeypatch.setattr(hooks.os, "name", "posix")
+    monkeypatch.setattr(hooks, "_platform_name", lambda: "posix")
     assert hooks._cc_command_outdated("/usr/bin/python3 /home/u/.config/token-tracker/claude-statusline.py")
     assert not hooks._cc_command_outdated('"/usr/bin/python3" "/home/u/.config/token-tracker/claude-statusline.py"')
     # Windows 上即便有引号，含反斜杠也算过时
-    monkeypatch.setattr(hooks.os, "name", "nt")
+    monkeypatch.setattr(hooks, "_platform_name", lambda: "nt")
     assert hooks._cc_command_outdated(r'"C:\Users\X\python.exe" "C:\Users\X\claude-statusline.py"')
     assert not hooks._cc_command_outdated('"C:/Users/X/python.exe" "C:/Users/X/claude-statusline.py"')
     # 空命令 / 非 tt 命令交给上层 _is_tt_cc_command 过滤；这里仅断言空串返回 False
@@ -862,7 +862,7 @@ def test_update_hook_rewrites_outdated_cc_command(tmp_path, monkeypatch):
     monkeypatch.setattr(hooks, "CLAUDE_SETTINGS", str(settings_file))
     monkeypatch.setattr(hooks, "HOOK_SCRIPT_PATH", str(script_file))
     monkeypatch.setattr(hooks.sys, "executable", "/new/python3")
-    monkeypatch.setattr(hooks.os, "name", "posix")
+    monkeypatch.setattr(hooks, "_platform_name", lambda: "posix")
 
     assert hooks._cc_command_needs_sync()  # 检测到过时
     hooks.update_hook()
@@ -900,6 +900,8 @@ def _cc_only_home(tmp_path, monkeypatch, settings_text=None):
     monkeypatch.setattr(hooks, "CC_BACKUP_PATH", str(cc_dir / "cc-backup.json"))
     monkeypatch.setattr(hooks, "STATUS_FILE", str(cc_dir / "tt-status.json"))
     monkeypatch.setattr(hooks, "CODEX_DIR", str(tmp_path / "no-codex"))
+    monkeypatch.setattr(hooks, "_KIMI", str(tmp_path / "no-kimi"))
+    monkeypatch.setattr(hooks, "KIMI_CONFIG", str(tmp_path / "no-kimi" / "config.toml"))
     monkeypatch.setattr(hooks, "_LEGACY_PATHS", [])
     _isolate_config(monkeypatch, tmp_path / "cfg")
     return settings_path

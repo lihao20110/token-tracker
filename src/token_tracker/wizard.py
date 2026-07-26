@@ -233,7 +233,7 @@ def _print_summary(console, choice: str, components: SetupComponents) -> None:
     console.print(f"  [{green}]{t('wizard_signoff')} - by stormzhang[/{green}]")  # 署名 sign-off，非 dim
 
 
-def run_wizard() -> None:
+def run_wizard(install_kimi: bool = False) -> None:
     # agent 守卫由调用方 cli._run_setup_flow 统一做（唯一入口），这里假设至少有一个 agent。
     from .adapters.registry import detect_agents
     from .cli import _get_version
@@ -271,5 +271,5 @@ def run_wizard() -> None:
     components = ask_components(step_prefix_fn=lambda i: f"[{i + 2}/{total}] ")
 
     # 落地配置（静默，由综合总结统一反馈）
-    setup(components=components, quiet=True)
+    setup(components=components, quiet=True, install_kimi=install_kimi)
     _print_summary(console, choice, components)

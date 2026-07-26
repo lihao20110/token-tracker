@@ -1,6 +1,6 @@
 # Token Tracker (tt)
 
-本地 AI Agent Token 消耗追踪/分析工具，支持 **Claude Code** 和 **Codex** 。
+本地 AI Agent Token 消耗追踪/分析工具，支持 **Claude Code** 、 **Codex** 和 **Kimi Code** 。
 
 自定义 StatusLine 状态栏 + CLI Dashboard，实时查看 token 用量、等效成本、限额状态。
 
@@ -12,8 +12,8 @@
 
 ## 功能亮点
 
-- **多 Agent 统一追踪** — Claude Code + Codex 统一读取，多 Agent 按来源分组
-- **状态栏集成** — Claude Code 用官方 StatusLine 接口；**Codex 业界首创伪 statusline 方案**（hook 注入两行真彩色状态栏，把官方未开放的能力在 Codex 里做了出来）
+- **多 Agent 统一追踪** — Claude Code + Codex + Kimi Code 统一读取，多 Agent 按来源分组
+- **状态栏集成** — Claude Code 用官方 StatusLine 接口；**Codex 业界首创伪 statusline 方案**（hook 注入两行真彩色状态栏，把官方未开放的能力在 Codex 里做了出来）；Kimi Code 无 TUI 注入通道（已验证），改用 `tt kimi-watch` 常驻实时窗格（见下文）
 - **实时侧边栏** — `tt sidebar` 窄窗格常驻面板：全部活跃会话一屏总览（状态灯 + 最近提示词 + 「下一步」建议），点击会话直达对应 iTerm2 / tmux 窗格
 - **当前会话自动分屏** — Codex 中显式执行 `$tt-sidebar`，在原会话右侧自动打开 1/3 宽度的独立提示词侧边栏
 - **限额监控** — 实时 5h / 7d 配额百分比 + 重置倒计时
@@ -70,6 +70,17 @@ Codex 官方暂不支持自定义 StatusLine。Token Tracker 通过 hook 注入�
 - **L2** `Limit: 5h <进度条> % (reset <倒计时>) | 7d <进度条> % (reset <倒计时>) | <窗口> Ctx <进度条> %`
 
 渲染 24-bit 真彩色、**不进模型上下文**（实测），**配色跟随当前主题**（与 CLI 报表 / CC 状态栏同源，`tt theme` 切换三者一起变）。`tt unsetup` 一并移除。
+
+### Kimi Code（`tt kimi-watch` 常驻实时窗格）
+
+Kimi Code 的 TUI 是全屏应用，**没有**官方 StatusLine 接口，也不支持 Codex 式 `systemMessage` 注入（均已实测验证），hook 的 stdout 只会进模型上下文。因此 Kimi Code 的实时状态走**独立常驻窗格**：
+
+- **六行内容**：① 活跃会话；② 5h 额度与重置倒计时；③ 7d 额度与重置倒计时；④-⑥ 今日 `in`、`out`、`cache` 分三行显示，估算成本与本会话累计保留在 cache 行
+- **刷新**：本地 `wire.jsonl` 每 2 秒重扫（mtime 预筛）；额度走官方 `usages` 查询接口每 60 秒轮询（纯查询不耗模型额度，失败保留上次值并标 stale）
+- **同窗口分屏**：显式运行 `tt setup` 会写入 Kimi `Stop` 心跳 Hook 与 Windows Terminal 的窗格快捷键；在 **Windows Terminal** 的 Kimi 标签页内按 `Ctrl+Alt+K`，会在右侧 20% 打开 `kimi-watch` 窗格；其他终端手动运行 `tt kimi-watch` 即可；`--once` 打印单帧快照
+- **报表互通**：Kimi Code 会话（含 subagent）全部进入 `tt daily / weekly / monthly / sessions / status`，`--kimi` 可单独过滤
+
+`tt unsetup` 一并移除 hooks。与 `/usage` 的分工：`/usage` 是手动一次性快照；kimi-watch 是常驻实时 + 历史成本账本。
 
 ## 报表速览
 
@@ -135,10 +146,24 @@ pip uninstall token-tracker
 curl -sSL https://raw.githubusercontent.com/stormzhang/token-tracker/main/install.sh | bash
 ```
 
+
+## 本地快速部署（从源码）
+
+适用于 Clone 仓库后本地验证或运行：
+
+```bash
+git clone https://github.com/stormzhang/token-tracker.git
+cd token-tracker
+python -m pip install -e .
+tt setup
+```
+
+更新源码后依次执行 `git pull`、`python -m pip install -e .` 和 `tt setup`；最后一步会同步 Agent Hook 与 Windows Terminal 窗格快捷键。
+
 ## 使用
 
 ```bash
-tt setup          # 配置状态栏，并安装 Codex $tt-sidebar Skill / 提示词 Hook
+tt setup          # 配置状态栏、Codex $tt-sidebar Skill / Hooks、Kimi Stop 心跳 Hook 与 Windows Terminal 窗格快捷键
 tt                # 过去一年 token 热力图 + 顶部三段概览（= tt daily）
 tt daily          # 同上（tt 无参即进 daily）
 tt status         # 今日消耗、5h/7d 额度与今日会话
@@ -146,12 +171,13 @@ tt weekly         # 周报
 tt monthly        # 月报
 tt sessions       # 最近 20 条会话明细（tt sessions <正整数> 改条数、--sort 改排序）
 tt sidebar        # 常驻侧边栏：活跃会话总览 + 提示词历史 + 状态灯 + 点击跳转（--once 一帧快照）
+tt kimi-watch     # Kimi Code 常驻实时窗格（--once 打印单帧快照）
 tt theme          # 查看 / 切换配色主题（show / list / set / preview）
 tt unsetup        # 卸载并恢复安装前的配置
 tt --version      # 查看版本（-v / -V 同义）
 ```
 
-> 多 agent 环境下想只看某一个 agent 的报表，加 `--claude` 或 `--codex` 即可（互斥），对 `status` / `daily` / `weekly` / `monthly` / `sessions` 均生效。例如 `tt daily --codex` 只显示 Codex 的热力图。会话内的 `daily` / `weekly` 默认已自动跟随当前会话的 agent，显式 flag 会覆盖该行为。
+> In multi-agent setups, use one of `--claude`, `--codex`, or `--kimi` to filter `status` / `daily` / `weekly` / `monthly` / `sessions`. Explicit flags override in-session auto-detection.
 
 > 💡 `tt daily` 是 GitHub 风格的 token 贡献热力图（深浅绿方格）。在 Claude Code 会话里输入 `!tt daily` 即可看到彩色热力图 —— 用户主动用 `!` 执行的命令，Claude Code 会渲染其 24-bit 真彩色输出。
 
@@ -208,10 +234,11 @@ tt sessions --sort tokens --asc # 按 token 升序
 |-------|------|------|
 | Claude Code | `~/.claude/projects/*/` | JSONL（逐消息用量） |
 | Codex | `~/.codex/sessions/` | JSONL + SQLite |
+| Kimi Code | `~/.kimi-code/sessions/`、`~/.kimi-code/credentials/` | wire.jsonl（usage.record）+ 官方 usages 查询接口（额度） |
 
-路径跨平台：Windows 下 `~` 解析到 `%USERPROFILE%`。设了 `CLAUDE_CONFIG_DIR` / `CODEX_HOME` 环境变量（官方支持的自定义目录）时自动跟随。
+路径跨平台：Windows 下 `~` 解析到 `%USERPROFILE%`。设了 `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `KIMI_CODE_HOME` 环境变量（官方支持的自定义目录）时自动跟随。
 
-Token Tracker 对 Agent 数据**只读**，不做任何修改。
+Token Tracker 对 Agent 数据**只读**，不做任何修改。唯一例外：Kimi Code 的 OAuth access_token 过期时，会用 refresh_token 换新并**原子写回原凭证文件**（与 CLI 自身行为一致，refresh_token 轮换机制要求写回）。
 
 ## 环境要求
 

@@ -17,6 +17,7 @@ Rich Group 由 _SidebarBody 补 Textual 选择偏移与文本提取；split 选�
 
 import os
 import select
+import socket
 import subprocess
 import sys
 import threading
@@ -46,7 +47,7 @@ from ..sidebar import (
     scan_sessions,
     terminal_info,
 )
-from ..sidebar_events import MAX_EVENT_BYTES, PromptEvent, decode_prompt_event, prompt_fifo_path
+from ..sidebar_events import MAX_EVENT_BYTES, PromptEvent, decode_prompt_event, prompt_fifo_path, prompt_socket_port
 from .sidebar import SPLIT_PROMPT_LIMIT, render_sidebar, render_split_sidebar
 from .themes import get_theme
 
@@ -234,6 +235,7 @@ class SidebarApp(App[None]):
         self._prompt_session_id = prompt_session_id
         self._prompt_channel_dir = prompt_channel_dir
         self._prompt_fifo_fd: int | None = None
+        self._prompt_socket: socket.socket | None = None
         self._prompt_fifo_path: str | None = None
         self._prompt_fifo_inode: int | None = None
         self._seen_prompt_turns: set[str] = set()
@@ -268,24 +270,40 @@ class SidebarApp(App[None]):
     def _start_prompt_listener(self) -> None:
         """split 专属：阻塞等待当前会话的 UserPromptSubmit FIFO。"""
         assert self._prompt_session_id is not None
+        if os.name == "nt":
+            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(("127.0.0.1", prompt_socket_port(self._prompt_session_id)))
+            listener.listen()
+            listener.setblocking(False)
+            self._prompt_socket = listener
+            threading.Thread(
+                target=self._listen_prompt_socket_events,
+                args=(listener, self._prompt_session_id),
+                name="tt-sidebar-prompts", daemon=True,
+            ).start()
+            return
         path = prompt_fifo_path(self._prompt_session_id, self._prompt_channel_dir or ".")
         try:
             os.unlink(path)
         except FileNotFoundError:
             pass
-        os.mkfifo(path, 0o600)
-        fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+        os.mkfifo(path, 0o600)  # type: ignore[attr-defined]
+        fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)  # type: ignore[attr-defined]
         self._prompt_fifo_fd = fd
         self._prompt_fifo_path = path
         self._prompt_fifo_inode = os.stat(path).st_ino
         threading.Thread(
             target=self._listen_prompt_events,
             args=(fd, self._prompt_session_id),
-            name="tt-sidebar-prompts",
-            daemon=True,
+            name="tt-sidebar-prompts", daemon=True,
         ).start()
 
     def _stop_prompt_listener(self) -> None:
+        listener = self._prompt_socket
+        self._prompt_socket = None
+        if listener is not None:
+            listener.close()
         fd = self._prompt_fifo_fd
         self._prompt_fifo_fd = None
         if fd is not None:
@@ -304,6 +322,34 @@ class SidebarApp(App[None]):
                     os.unlink(path)
             except FileNotFoundError:
                 pass
+
+
+    def _listen_prompt_socket_events(self, listener: socket.socket, session_id: str) -> None:
+        while self._prompt_socket is listener:
+            try:
+                readable, _, _ = select.select([listener], [], [])
+                if not readable:
+                    continue
+                conn, _ = listener.accept()
+            except (OSError, ValueError):
+                return
+            with conn:
+                conn.setblocking(True)
+                raw = bytearray()
+                while len(raw) <= MAX_EVENT_BYTES:
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        break
+                    raw.extend(chunk)
+            if len(raw) < 4:
+                continue
+            size = int.from_bytes(raw[:4], "big")
+            event = decode_prompt_event(bytes(raw[4:4 + size]), session_id) if 0 < size <= MAX_EVENT_BYTES else None
+            if event is not None:
+                try:
+                    self.call_from_thread(self._accept_prompt_event, event)
+                except RuntimeError:
+                    return
 
     def _listen_prompt_events(self, fd: int, session_id: str) -> None:
         buffer = bytearray()

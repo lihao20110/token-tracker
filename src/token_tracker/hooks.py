@@ -8,13 +8,19 @@ from dataclasses import dataclass
 from importlib import resources
 
 from . import config, sidebar_install
-from .adapters.util import claude_home, codex_home
+from .adapters.util import claude_home, codex_home, kimi_home
 from .i18n import t
 from .ui import themes
 from .ui.console import get_console
+from .windows_terminal import install_kimi_watch_action, uninstall_kimi_watch_action
 
 _CLAUDE = claude_home()  # CLAUDE_CONFIG_DIR 覆盖 / ~/.claude
 _CODEX = codex_home()    # CODEX_HOME 覆盖 / ~/.codex
+_KIMI = kimi_home()      # KIMI_CODE_HOME 覆盖 / ~/.kimi-code
+
+
+def _platform_name() -> str:
+    return os.name
 
 
 @dataclass
@@ -36,6 +42,7 @@ CLAUDE_SETTINGS = os.path.join(_CLAUDE, "settings.json")  # 改 Claude Code 配�
 HOOK_SCRIPT_PATH = os.path.join(_TT, "claude-statusline.py")
 CODEX_DIR = _CODEX
 CODEX_CONFIG = os.path.join(CODEX_DIR, "config.toml")     # 仅迁移旧内联 Stop；新 Hook 统一写 hooks.json
+KIMI_CONFIG = os.path.join(_KIMI, "config.toml")          # Kimi Code hooks 以文本段标记追加/移除
 CODEX_STATUSLINE_HOOK_PATH = os.path.join(_TT, "codex-statusline.py")
 STATUS_FILE = config.STATUS_FILE                          # CC statusline 缓存（单一权威定义在 config）
 TERMINAL_MAP_FILE = config.TERMINAL_MAP_FILE              # Codex Stop hook 采集的终端定位映射
@@ -89,7 +96,7 @@ def _write_codex_statusline_script() -> None:
     os.makedirs(_TT, exist_ok=True)
     with open(CODEX_STATUSLINE_HOOK_PATH, "w", encoding="utf-8") as f:
         f.write(_render_codex_statusline_hook())
-    if os.name != "nt":
+    if _platform_name() != "nt":
         os.chmod(CODEX_STATUSLINE_HOOK_PATH,
                  os.stat(CODEX_STATUSLINE_HOOK_PATH).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
@@ -221,7 +228,8 @@ def is_setup() -> bool:
     CC 端例外：意图缺失（None）但 statusLine 已是 tt 的 → 按存量用户推断为已配（不打扰）。"""
     has_cc = os.path.isdir(os.path.dirname(CLAUDE_SETTINGS))
     has_codex = os.path.isdir(CODEX_DIR)
-    if not has_cc and not has_codex:
+    has_kimi = os.path.isdir(_KIMI)
+    if not has_cc and not has_codex and not has_kimi:
         return False
     if has_cc:
         intent = config.cc_statusline_intent()
@@ -263,7 +271,7 @@ def _build_cc_command(python: str, script: str) -> str:
     Windows: 反斜杠转正斜杠（CC 在 Windows 走 Git Bash/sh 执行 command，反斜杠被吞致 exit 127）；
     所有平台: 两段路径都加双引号包裹（防路径含空格断词）。
     issue #13 / #14 根治：旧格式 `f"{python} {script}"` 在 Windows 静默失败、状态栏空白。"""
-    if os.name == "nt":
+    if _platform_name() == "nt":
         python = python.replace("\\", "/")
         script = script.replace("\\", "/")
     return f'"{python}" "{script}"'
@@ -277,7 +285,7 @@ def _cc_command_outdated(cmd: str) -> bool:
         return False
     if not cmd.startswith('"'):
         return True  # 没引号 = 旧裸拼接
-    if os.name == "nt" and "\\" in cmd:
+    if _platform_name() == "nt" and "\\" in cmd:
         return True  # Windows 上还含反斜杠 = 没转过来
     return False
 
@@ -287,7 +295,7 @@ def _write_cc_statusline_script() -> None:
     os.makedirs(_TT, exist_ok=True)
     with open(HOOK_SCRIPT_PATH, "w", encoding="utf-8") as f:
         f.write(_render_hook_script())
-    if os.name != "nt":
+    if _platform_name() != "nt":
         os.chmod(HOOK_SCRIPT_PATH,
                  os.stat(HOOK_SCRIPT_PATH).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
@@ -387,6 +395,8 @@ def needs_update() -> bool:
             or _inline_codex_statusline_present()
         ):
             return True
+    if os.path.isdir(_KIMI) and kimi_hooks_need_sync():
+        return True
     return _cc_command_needs_sync()  # settings.json 里 command 格式过时也算待更新（issue #13/#14）
 
 
@@ -400,11 +410,106 @@ def update_hook() -> None:
     if os.path.isdir(CODEX_DIR) and config.setup_version() >= 3:
         _sync_codex_managed_hooks(quiet=True)
         _setup_codex_sidebar(quiet=True)
+    if os.path.isdir(_KIMI) and kimi_hooks_need_sync():  # 已装才同步，未装不主动装
+        _setup_kimi(quiet=True)
+
+
+# --- Kimi Code hooks（config.toml 文本段标记追加/移除） ---
+
+# 段标记包裹 tt 管理的两个 [[hooks]]，unsetup 按标记整段移除、不碰用户其它 TOML
+_KIMI_HOOKS_BEGIN = "# >>> token-tracker kimi hooks >>>"
+_KIMI_HOOKS_END = "# <<< token-tracker kimi hooks <<<"
+_KIMI_HOOKS_REGEX = re.compile(
+    rf"\n*{re.escape(_KIMI_HOOKS_BEGIN)}.*?{re.escape(_KIMI_HOOKS_END)}\n?",
+    flags=re.DOTALL,
+)
+
+
+def _kimi_heartbeat_command(python: str | None = None) -> str:
+    """Stop hook 命令：绝对解释器路径（hook 上下文不保证 PATH 里有 tt/python），
+    Windows 反斜杠转正斜杠（同 _build_cc_command 的 issue #13/#14 治法）。"""
+    python = python or sys.executable or "python3"
+    if _platform_name() == "nt":
+        python = python.replace("\\", "/")
+    return f'"{python}" -B -m token_tracker.cli kimi-heartbeat'
+
+
+def _render_kimi_hooks_block() -> str:
+    """Kimi Stop writes a heartbeat for kimi-watch; same-window panes use a Terminal action."""
+    return (
+        f"{_KIMI_HOOKS_BEGIN}\n"
+        f"[[hooks]]\nevent = \"Stop\"\ncommand = '{_kimi_heartbeat_command()}'\n"
+        f"{_KIMI_HOOKS_END}\n"
+    )
+
+
+def _read_kimi_config() -> str | None:
+    try:
+        with open(KIMI_CONFIG, encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def kimi_hooks_present() -> bool:
+    content = _read_kimi_config()
+    return bool(content and _KIMI_HOOKS_REGEX.search(content))
+
+
+def install_kimi_hooks() -> bool:
+    """把 tt 管理的 hooks 段写入 config.toml（幂等）：已有段先整段替换（命令可能随版本变化），
+    没有则追加到文件末尾；用户其它 TOML 原样保留。config.toml 不存在时新建。"""
+    block = _render_kimi_hooks_block()
+    content = _read_kimi_config()
+    if content is None:
+        new_content = block
+    elif _KIMI_HOOKS_REGEX.search(content):
+        # 段前分隔标准化为 "\n\n"（段在文件开头则无前缀），保证重复安装逐字节稳定（幂等）
+        new_content = _KIMI_HOOKS_REGEX.sub(
+            lambda m: ("\n\n" if m.start() > 0 else "") + block, content)
+    else:
+        new_content = f"{content.rstrip(chr(10))}\n\n{block}" if content.strip() else block
+    if new_content == content:
+        return False
+    _write_kimi_config_atomic(new_content)
+    return True
+
+
+def _write_kimi_config_atomic(content: str) -> None:
+    os.makedirs(_KIMI, exist_ok=True)
+    temp = f"{KIMI_CONFIG}.tmp-{os.getpid()}"
+    try:
+        with open(temp, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(temp, KIMI_CONFIG)
+    except OSError:
+        try:
+            os.remove(temp)
+        except OSError:
+            pass
+        raise
+
+
+def uninstall_kimi_hooks() -> bool:
+    """按段标记移除 tt 管理的 hooks 段；文件/段不存在返回 False。"""
+    content = _read_kimi_config()
+    if content is None or not _KIMI_HOOKS_REGEX.search(content):
+        return False
+    new_content = _KIMI_HOOKS_REGEX.sub("\n", content)
+    _write_kimi_config_atomic(new_content)
+    return True
+
+
+def kimi_hooks_need_sync() -> bool:
+    """已装的段与当前版本渲染结果不一致（如解释器路径变了）→ 需要重写。"""
+    content = _read_kimi_config()
+    return bool(content and _KIMI_HOOKS_REGEX.search(content)
+                and _render_kimi_hooks_block() not in content)
 
 
 # --- setup ---
 
-def setup(auto: bool = False, components: SetupComponents | None = None, quiet: bool = False) -> None:
+def setup(auto: bool = False, components: SetupComponents | None = None, quiet: bool = False, install_kimi: bool = False) -> None:
     """安装状态栏 + 可选组件。components=None 表示推荐默认（recommended_components：
     已有意图优先、CC 端探测 settings.json、绝不静默替换用户自定义 statusLine）。
     quiet=True 时不打任何提示（wizard 场景：由 wizard 末尾给一次综合总结）。"""
@@ -414,8 +519,9 @@ def setup(auto: bool = False, components: SetupComponents | None = None, quiet: 
 
     has_cc = os.path.isdir(os.path.dirname(CLAUDE_SETTINGS))
     has_codex = os.path.isdir(CODEX_DIR)
+    has_kimi = os.path.isdir(_KIMI)
 
-    if not has_cc and not has_codex:
+    if not has_cc and not has_codex and not has_kimi:
         p(f"[red]{t('no_agent_install')}[/red]")
         return
 
@@ -437,6 +543,9 @@ def setup(auto: bool = False, components: SetupComponents | None = None, quiet: 
     else:
         if not auto:
             p(f"[dim]{t('codex_not_found')}[/dim]")
+
+    if has_kimi and install_kimi:
+        _setup_kimi(quiet)
 
     # setup 真正落地了，写入当前引导版本——后续启动 cli 不再触发"老用户重新引导"。
     # early-return 分支（无 agent）不会到这，符合语义。
@@ -589,14 +698,33 @@ def _setup_codex_sidebar(quiet: bool = False) -> None:
 def unsetup() -> None:
     has_cc = os.path.isdir(os.path.dirname(CLAUDE_SETTINGS))
     has_codex = os.path.isdir(CODEX_DIR)
+    has_kimi = os.path.isdir(_KIMI)
 
     if has_cc:
         _unsetup_claude()
     if has_codex:
         _unsetup_codex()
         _unsetup_codex_sidebar()
-    if not has_cc and not has_codex:
+    if has_kimi:
+        _unsetup_kimi()
+    if not has_cc and not has_codex and not has_kimi:
         get_console().print(f"[dim]{t('no_agent_detected')}[/dim]")
+
+
+def _setup_kimi(quiet: bool = False) -> None:
+    """Kimi Code 端：向 config.toml 写入 tt 管理的 hooks 段（幂等，文本段标记包裹）。"""
+    p = (lambda *a, **k: None) if quiet else get_console().print
+    if install_kimi_hooks():
+        p(f"[green]✓[/green] {t('kimi_hooks_synced')}")
+    if _platform_name() == "nt" and install_kimi_watch_action():
+        p(f"[green]✓[/green] {t('kimi_watch_action_synced')}")
+
+
+def _unsetup_kimi() -> None:
+    if uninstall_kimi_hooks():
+        get_console().print(f"[green]✓[/green] {t('kimi_hooks_removed')}")
+    if _platform_name() == "nt" and uninstall_kimi_watch_action():
+        get_console().print(f"[green]✓[/green] {t('kimi_watch_action_removed')}")
 
 
 def _unsetup_claude() -> None:

@@ -4,6 +4,7 @@
 本文件是项目真实进度源，记录当前阶段、已完成、待办、阻塞与最近验证。`README.md` 写介绍与用法，`CLAUDE.md` 写开发约定，三者分工不混。
 
 ## 当前阶段
+**Kimi Code adapter, live pane, and Windows sidebar compatibility complete (2026-07-26)**: the adapter reads main/subagent usage records into reports; `--kimi` is exclusive and `tt kimi-watch` provides the live pane. Explicit `tt setup` installs the Kimi Stop heartbeat hook. On Windows Terminal, it installs the Ctrl+Alt+K `splitPane` action, which opens a right watcher pane inside the current Kimi window; the installer selects the portable Terminal settings file when `wt.exe` is portable. This replaces unreliable external SessionStart window targeting. Windows prompt events use loopback TCP and process liveness uses GetProcessTimes. Full pytest, Ruff, mypy, compileall, and git diff --check have passed; real Kimi-window invocation was verified by the watcher process.
 
 **`0.4.11` 已发布 PyPI（2026-07-22，源码与 tag 已 push）**：本次小版本包含三项修复：① Codex 状态栏只显示标准账号 weekly limit，忽略 Spark 独立池并按事件时间选择最新标准额度；② sidebar 测试不再依赖中文运行环境，GitHub Actions 的 Python 3.11 / 3.12 已恢复；③ `$tt-sidebar` 在 iTerm2 下明确申请沙箱外执行，避免 AppleScript 术语字典被拦截后误报 `-2741`。`pyproject.toml` / `uv.lock` 已同步 0.4.11；完整 pytest **258 全绿**、Ruff 全过、mypy 38 个源文件 0 报错，`uv lock --check` 与 `git diff --check` 通过。sdist / wheel 构建与 Twine check 通过；wheel 仅保留 `rich` / `questionary` / `textual` 三个运行时依赖，包含新版 `iterm_split.py`、Skill 与 agent metadata。GitHub Actions 的 Python 3.11 / 3.12 均通过；PyPI JSON 与 Simple 索引已传播，wheel SHA-256 `abf1a22e…df1c`、sdist SHA-256 `ae28e77a…a82` 与本地产物一致；独立缓存从 PyPI 安装后 `tt --version` 正确输出 0.4.11。
 

@@ -24,6 +24,14 @@ def codex_home() -> str:
     return os.path.expanduser("~/.codex")
 
 
+def kimi_home() -> str:
+    """Kimi Code 配置/数据根目录：`KIMI_CODE_HOME` 优先，否则 `~/.kimi-code`。"""
+    env = os.environ.get("KIMI_CODE_HOME", "").strip()
+    if env:
+        return env
+    return os.path.expanduser("~/.kimi-code")
+
+
 def iter_jsonl_dicts(path: Path | str) -> Iterator[dict]:
     """逐行读取 JSONL，只 yield dict 行。
 
@@ -68,6 +76,9 @@ def project_from_cwd(cwd: str) -> str:
     从 cwd 一路 dirname 向上，第一个含 .git 的目录就是项目根。.git 是仓库元数据目录/文件，
     判断它存在只读文件系统，与 git 是否安装无关；子目录已删也能向上命中仓库根。
     """
+    # Codex history can originate on a different platform, such as WSL on Windows.
+    # Normalize separators before probing parent directories and falling back to a basename.
+    cwd = os.path.normpath(cwd.replace("/", os.sep))
     home = os.path.expanduser("~")
     d = cwd
     while d and d not in (os.sep, home):

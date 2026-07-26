@@ -6,7 +6,7 @@ from datetime import datetime
 from rich.text import Text
 
 from . import config, i18n
-from .adapters import claude, codex
+from .adapters import claude, codex, kimi
 from .adapters.rate_limits import load_rate_limits as load_claude_rate_limits
 from .adapters.registry import detect_agents
 from .adapters.types import StatusSummary
@@ -23,7 +23,7 @@ from .i18n import t
 from .sidebar import registry_update_hint, scan_sessions
 from .tz import system_tz
 from .ui import theme, themes
-from .ui.console import forced_color_console, get_console
+from .ui.console import _configure_windows_stdout_utf8, forced_color_console, get_console
 from .ui.heatmap import render_daily_heatmap
 from .ui.sidebar import render_sidebar
 from .ui.status import render_sessions_view, render_status
@@ -32,8 +32,9 @@ from .ui.tables import (
     render_weekly,
 )
 
-AGENT_LOADERS = {"claude-code": claude, "codex": codex}
-RATE_LIMIT_LOADERS = {"claude-code": load_claude_rate_limits, "codex": codex.load_rate_limits}
+AGENT_LOADERS = {"claude-code": claude, "codex": codex, "kimi-code": kimi}
+RATE_LIMIT_LOADERS = {"claude-code": load_claude_rate_limits, "codex": codex.load_rate_limits,
+                      "kimi-code": kimi.load_rate_limits}
 
 # 排序字段 → stats 属性名（单一权威表）。
 # "time" 的属性因命令而异（daily=date / weekly=week / sessions=start_time），不在此表，走 default_attr。
@@ -77,7 +78,7 @@ def _extract_agent_arg(args: list[str]) -> tuple[list[str], str | None]:
     未给返回 None（走默认合并 + 会话自动识别）。用于多 agent 环境按需只看一个 agent（issue #19）。"""
     remaining: list[str] = []
     agent_id: str | None = None
-    _FLAG_TO_ID = {"--claude": "claude-code", "--codex": "codex"}
+    _FLAG_TO_ID = {"--claude": "claude-code", "--codex": "codex", "--kimi": "kimi-code"}
     for a in args:
         target = _FLAG_TO_ID.get(a)
         if target is None:
@@ -278,7 +279,7 @@ def _should_run_wizard() -> bool:
     return _is_tty() and not _current_session_agent()
 
 
-def _run_setup_flow() -> None:
+def _run_setup_flow(install_kimi: bool = False) -> None:
     """配置流程**单一入口**：先确认装了至少一个 agent（detect_agents 守卫只此一处），
     再按环境分流——双 tty 非会话内进交互向导，否则非交互默认全装。
     `tt setup` 与首次运行「没配过」时都走这里。"""
@@ -287,12 +288,12 @@ def _run_setup_flow() -> None:
         return
     if _should_run_wizard():
         from .wizard import run_wizard
-        run_wizard()  # wizard 欢迎行下会显示检测到的 agent
+        run_wizard(install_kimi=install_kimi)  # wizard 欢迎行下会显示检测到的 agent
     else:
-        _auto_setup()
+        _auto_setup(install_kimi=install_kimi)
 
 
-def _auto_setup() -> None:
+def _auto_setup(install_kimi: bool = False) -> None:
     """非交互环境（非 tty / CI / 会话内）：语言跟随**系统设置**（绕过 CLI LANG）、主题 mocha、
     组件按推荐默认（hooks.recommended_components：已有意图优先、不替换已有自定义 statusLine）。
     仅当用户从未配置过语言/主题时落默认（不覆盖已有选择）。
@@ -303,7 +304,7 @@ def _auto_setup() -> None:
         i18n.set_lang(sys_lang)
     if not config.load_config().get("theme"):
         config.save_theme("mocha")
-    setup(auto=True)  # 组件走推荐默认（setup 内部 components=None → recommended_components）
+    setup(auto=True, install_kimi=install_kimi)  # 组件走推荐默认（setup 内部 components=None → recommended_components）
     get_console().print(f"[dim]{t('auto_setup_hint')}[/dim]")
 
 
@@ -426,10 +427,18 @@ def _handle_non_data_command(command: str, args: list[str]) -> bool:
         cmd_theme(args)
         return True
     if command == "setup":
-        _run_setup_flow()
+        _run_setup_flow(install_kimi=True)
         return True
     if command == "unsetup":
         unsetup()
+        return True
+    if command == "kimi-watch":
+        from .kimi_watch import cmd_kimi_watch  # 延迟 import：Live 仅在用到时加载
+        cmd_kimi_watch(args)
+        return True
+    if command == "kimi-heartbeat":
+        from .kimi_watch import write_heartbeat
+        write_heartbeat()
         return True
     return False
 
@@ -454,7 +463,7 @@ def _select_agents(filter_agent: str | None):
     matched = [agent for agent in agents if agent.id == filter_agent]
     if matched:
         return matched
-    flag = "--claude" if filter_agent == "claude-code" else "--codex"
+    flag = {"claude-code": "--claude", "codex": "--codex"}.get(filter_agent, "--kimi")
     get_console().print(f"[red]{t('agent_not_detected', flag=flag)}[/red]")
     sys.exit(1)
 
@@ -519,6 +528,7 @@ def _render_session_report(stats, rest_args: list[str], sort_key: str | None,
 
 
 def main():
+    _configure_windows_stdout_utf8()
     # --mock：本地开发演示，加载 mock/ 假数据再走正常报表流程（mock/ 在 .gitignore）
     if "--mock" in sys.argv:
         sys.argv = [a for a in sys.argv if a != "--mock"]

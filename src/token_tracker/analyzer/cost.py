@@ -315,6 +315,9 @@ def _fallback_pricing() -> dict:
         # ---- 国产模型（2026-06 官方核实）。除 GLM 用 z.ai 国际站 USD 外，其余按各家中国站
         # 人民币价 ÷7.1 折算；阶梯定价模型（Qwen3-Coder / Doubao）统一取 0-32K 基础档。----
         # Kimi / Moonshot（platform.kimi.com 官方人民币价；老 kimi-k2-instruct 已 EOL，靠系列兜底）
+        # k3：Kimi Code 当前默认模型（wire.jsonl 里写作 kimi-code/k3），litellm 尚未收录（2026-07
+        # 核实），且裸名 "k3" 不含 "kimi" 前缀、_FAMILY_FALLBACK 接不住 → 内置兜底到 k2.7-code 同价
+        "k3": _cny(6.5, 27, 1.3),
         "kimi-k2.7-code": _cny(6.5, 27, 1.3),
         "kimi-k2.6": _cny(6.5, 27, 1.1),
         "kimi-k2.5": _cny(4, 21, 0.7),
