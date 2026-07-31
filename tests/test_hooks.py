@@ -1237,6 +1237,43 @@ def test_kimi_statusline_script_renders_one_line_and_accumulates(tmp_path):
     assert entry["offset"] == wire.stat().st_size
 
 
+def test_kimi_statusline_script_partial_line_and_write_skip(tmp_path):
+    # 并发写 wire：末尾半截行不消费（offset 不吞字节），补全后下一帧完整计入、不丢不重复；
+    # 无新增字节时 state 跳过写盘（mtime 不变）。
+    script = tmp_path / "kimi-statusline.py"
+    script.write_text(hooks._render_kimi_statusline_hook(), encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir()
+    kimi_dir = tmp_path / "kimi-home"
+    wire = kimi_dir / "sessions" / "wd_x" / "session_abc123" / "agents" / "main" / "wire.jsonl"
+    wire.parent.mkdir(parents=True)
+    payload = {"model": "K3", "sessionId": "session_abc123"}
+    rec1 = json.dumps({"type": "usage.record", "model": "kimi-code/k3",
+                       "usage": {"inputOther": 1000, "output": 1000}})
+    rec2 = json.dumps({"type": "usage.record", "model": "kimi-code/k3",
+                       "usage": {"inputOther": 2000, "output": 2000}})
+
+    # 第一帧：rec1 完整 + rec2 只写了一半（无换行结尾）→ 只计 rec1，半截行不被 offset 吞掉
+    wire.write_text(rec1 + "\n" + rec2[:20], encoding="utf-8")
+    r1 = _run_kimi_statusline(script, payload, home, kimi_dir)
+    assert "Total: 2k" in r1.stdout
+    state_file = home / ".config" / "token-tracker" / "tt-kimi-statusline.json"
+    entry = json.loads(state_file.read_text())["session_abc123"]
+    assert entry["offset"] == len(rec1) + 1  # 只消费到 rec1 的换行为止
+
+    # 第二帧：wire 无变化 → state 跳过写盘（mtime 不变），Total 不变
+    mtime1 = state_file.stat().st_mtime_ns
+    r2 = _run_kimi_statusline(script, payload, home, kimi_dir)
+    assert "Total: 2k" in r2.stdout
+    assert state_file.stat().st_mtime_ns == mtime1
+
+    # 第三帧：半截行补全 + 换行 → rec2 完整计入，不丢不重复
+    with open(wire, "a", encoding="utf-8") as f:
+        f.write(rec2[20:] + "\n")
+    r3 = _run_kimi_statusline(script, payload, home, kimi_dir)
+    assert "Total: 6k" in r3.stdout  # 累计 i3000/o3000
+
+
 def test_kimi_statusline_script_fail_open(tmp_path):
     # stdin 损坏 / 空输入：仍输出至多一行（Kimi 取首行），绝不 traceback 到 stdout。
     script = tmp_path / "kimi-statusline.py"
