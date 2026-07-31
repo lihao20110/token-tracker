@@ -9,6 +9,7 @@ from importlib import resources
 
 from . import config, sidebar_install
 from .adapters.util import claude_home, codex_home, kimi_home
+from .analyzer import cost as _cost_mod
 from .i18n import t
 from .ui import themes
 from .ui.console import get_console
@@ -20,13 +21,15 @@ _KIMI = kimi_home()      # KIMI_CODE_HOME 覆盖 / ~/.kimi-code
 
 @dataclass
 class SetupComponents:
-    """组件开关。CC statusLine 接管与 Codex 伪 statusline（Stop hook）均为可选组件，意图持久化到 config.json。"""
+    """组件开关。CC statusLine 接管、Codex 伪 statusline（Stop hook）与 Kimi statusline
+    （tui.toml [status_line].command）均为可选组件，意图持久化到 config.json。"""
     cc_statusline: bool = True
     codex_faux_statusline: bool = True
+    kimi_statusline: bool = True
 
     @classmethod
     def all_on(cls) -> "SetupComponents":
-        return cls(cc_statusline=True, codex_faux_statusline=True)
+        return cls(cc_statusline=True, codex_faux_statusline=True, kimi_statusline=True)
 
 # tt 自己的产物（statusline 脚本 + 缓存 + 备份）集中放 ~/.config/token-tracker（XDG，跟 theme/lang 同处）；
 # settings.json / config.toml 是「改 agent 自己的配置」、必须留 agent 目录。statusLine/hook 的 command
@@ -38,10 +41,14 @@ HOOK_SCRIPT_PATH = os.path.join(_TT, "claude-statusline.py")
 CODEX_DIR = _CODEX
 CODEX_CONFIG = os.path.join(CODEX_DIR, "config.toml")     # 仅迁移旧内联 Stop；新 Hook 统一写 hooks.json
 CODEX_STATUSLINE_HOOK_PATH = os.path.join(_TT, "codex-statusline.py")
+KIMI_STATUSLINE_HOOK_PATH = os.path.join(_TT, "kimi-statusline.py")
+# Kimi statusline 的 wire offset / 累计缓存（脚本写；与 CC 心跳、终端映射分文件，避免并发互相覆盖）
+KIMI_STATUSLINE_STATE_PATH = os.path.join(_TT, "tt-kimi-statusline.json")
 STATUS_FILE = config.STATUS_FILE                          # CC statusline 缓存（单一权威定义在 config）
 TERMINAL_MAP_FILE = config.TERMINAL_MAP_FILE              # Codex Stop hook 采集的终端定位映射
 HOOK_VERSION = "2.1"  # 2.0: 采集 _terminal_map（sidebar 点击跳转）；2.1: 共享状态无条件随帧携带、防异常帧清表
 STATUSLINE_HOOK_VERSION = "1.2"  # 1.2: 采集 Codex 会话终端定位，供 tt sidebar 点击跳转
+KIMI_STATUSLINE_HOOK_VERSION = "1.0"  # 1.0: 首个版本（真 statusline，tui.toml [status_line].command）
 
 CC_BACKUP_PATH = os.path.join(_TT, "cc-backup.json")
 CODEX_BACKUP_LEGACY = os.path.join(_TT, "codex-backup.json")  # 老用户残留，unsetup 时还能恢复
@@ -104,6 +111,60 @@ def _installed_codex_statusline_version() -> str | None:
     except OSError:
         pass
     return None
+
+
+# --- Kimi Code statusline（真 statusline：tui.toml [status_line].command 调脚本，取 stdout 首行） ---
+
+# 烘焙进脚本的 Kimi 定价 key（与 cost.py _fallback_pricing 的三档一一对应；
+# 新增 Kimi 定价档时这里与模板路由要同步补）。
+_KIMI_PRICING_KEYS = ("kimi-k3", "kimi-k2.7-code", "kimi-k2.6")
+
+
+def _render_kimi_statusline_hook() -> str:
+    """注入版本号 + 当前主题 statusline 配色（truecolor）+ Kimi 三档内置定价，得到落盘脚本。
+    定价烘焙 _fallback_pricing 原样 dict（状态栏脚本零依赖、不联网；CLI 报表的在线价不适用这里）。"""
+    name = config.resolve_theme()
+    fallback = _cost_mod._fallback_pricing()
+    pricing = {key: fallback[key] for key in _KIMI_PRICING_KEYS}
+    return (
+        _load_template("kimi_statusline.py")
+        .replace("__KIMI_STATUSLINE_HOOK_VERSION__", KIMI_STATUSLINE_HOOK_VERSION)
+        .replace("__STATUSLINE_TRUECOLOR__", repr(themes.theme_to_statusline_ansi(name)))
+        .replace("__KIMI_PRICING__", repr(pricing))
+    )
+
+
+def _write_kimi_statusline_script() -> None:
+    os.makedirs(_TT, exist_ok=True)
+    with open(KIMI_STATUSLINE_HOOK_PATH, "w", encoding="utf-8") as f:
+        f.write(_render_kimi_statusline_hook())
+    if os.name != "nt":
+        os.chmod(KIMI_STATUSLINE_HOOK_PATH,
+                 os.stat(KIMI_STATUSLINE_HOOK_PATH).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def _installed_kimi_statusline_version() -> str | None:
+    try:
+        with open(KIMI_STATUSLINE_HOOK_PATH, encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("__version__"):
+                    return line.split("=", 1)[1].strip().strip('"\'')
+    except OSError:
+        pass
+    return None
+
+
+def _kimi_statusline_command(python: str | None = None) -> str:
+    return _build_cc_command(python or sys.executable or "python3", KIMI_STATUSLINE_HOOK_PATH)
+
+
+def kimi_statusline_active() -> bool:
+    """双因素：用户意图 AND 实际装好（脚本存在 + tui.toml 的 command 指向 tt 脚本）。"""
+    if config.kimi_statusline_intent() is not True:
+        return False
+    if not os.path.exists(KIMI_STATUSLINE_HOOK_PATH):
+        return False
+    return sidebar_install.kimi_statusline_hook_present()
 
 
 # 迁移 / 卸载时定位 tt 旧版追加的整段 [[hooks.Stop]]——
@@ -193,7 +254,9 @@ def recommended_components() -> SetupComponents:
     """setup(components=None) 与 wizard 问题默认值的唯一权威来源。
     CC 端探测优先（do-no-harm）：settings.json 里有非 tt 的自定义 statusLine（或 JSON 损坏）→ False，
     绝不静默替换用户自定义；否则已记录意图非 None → 用意图；否则 → True（全新 / 已是 tt 的 → 接管）。
-    Codex 端无从探测「用户自己的 statusline」：已记录意图非 None → 用意图，否则 → True。"""
+    Codex 端无从探测「用户自己的 statusline」：已记录意图非 None → 用意图，否则 → True。
+    Kimi 端探测 tui.toml（do-no-harm，同 CC 哲学）：用户自定义 status_line.command → False，
+    绝不静默替换；否则已记录意图非 None → 用意图；否则 → True。"""
     cc = True
     if os.path.exists(CLAUDE_SETTINGS):
         try:
@@ -213,7 +276,12 @@ def recommended_components() -> SetupComponents:
         cc = cc_intent if cc_intent is not None else True
     codex_intent = config.codex_faux_statusline_intent()
     codex = codex_intent if codex_intent is not None else True
-    return SetupComponents(cc_statusline=cc, codex_faux_statusline=codex)
+    if sidebar_install.kimi_statusline_user_custom():
+        kimi = False  # 用户自己的 status_line.command → 不接管
+    else:
+        kimi_intent = config.kimi_statusline_intent()
+        kimi = kimi_intent if kimi_intent is not None else True
+    return SetupComponents(cc_statusline=cc, codex_faux_statusline=codex, kimi_statusline=kimi)
 
 
 def is_setup() -> bool:
@@ -222,7 +290,8 @@ def is_setup() -> bool:
     CC 端例外：意图缺失（None）但 statusLine 已是 tt 的 → 按存量用户推断为已配（不打扰）。"""
     has_cc = os.path.isdir(os.path.dirname(CLAUDE_SETTINGS))
     has_codex = os.path.isdir(CODEX_DIR)
-    if not has_cc and not has_codex:
+    has_kimi = os.path.isdir(_KIMI)
+    if not has_cc and not has_codex and not has_kimi:
         return False
     if has_cc:
         intent = config.cc_statusline_intent()
@@ -239,6 +308,12 @@ def is_setup() -> bool:
             return False
         # intent True 时双因素都要满足；intent False 时用户明确不要、不强求文件
         if intent and not codex_statusline_active():
+            return False
+    if has_kimi:
+        intent = config.kimi_statusline_intent()
+        if intent is None:  # 没跑过 wizard、没表达意图 → 视为未配（老用户升级后重走一次 setup）
+            return False
+        if intent and not kimi_statusline_active():
             return False
     return True
 
@@ -392,6 +467,18 @@ def needs_update() -> bool:
     if os.path.isdir(_KIMI) and config.setup_version() >= 4:
         if sidebar_install.kimi_skill_needs_sync() or sidebar_install.kimi_hooks_need_sync():
             return True
+    # setup_version 5 起，Kimi statusline（tui.toml [status_line].command）也属于 setup 产物。
+    # 双因素哲学：意图为 True 才要求实装（None/False 不强求——None 由 is_setup 引导走 setup，
+    # False 是用户明确不要）；版本落后或 tui command 漂移都由 update_hook 收敛。
+    if (
+        os.path.isdir(_KIMI)
+        and config.setup_version() >= 5
+        and config.kimi_statusline_intent() is True
+    ):
+        if _installed_kimi_statusline_version() != KIMI_STATUSLINE_HOOK_VERSION:
+            return True
+        if sidebar_install.kimi_statusline_needs_sync(_kimi_statusline_command()):
+            return True
     return _cc_command_needs_sync()  # settings.json 里 command 格式过时也算待更新（issue #13/#14）
 
 
@@ -407,6 +494,18 @@ def update_hook() -> None:
         _setup_codex_sidebar(quiet=True)
     if os.path.isdir(_KIMI) and config.setup_version() >= 4:
         _setup_kimi_sidebar(quiet=True)
+    # 意图为 True 才收敛 Kimi statusline（重烘焙脚本 + 同步 tui command）；
+    # 损坏 tui.toml 自动更新绝不覆盖，只在显式 setup 时提示（同 hooks.json 哲学）。
+    if (
+        os.path.isdir(_KIMI)
+        and config.setup_version() >= 5
+        and config.kimi_statusline_intent() is True
+    ):
+        _write_kimi_statusline_script()
+        try:
+            sidebar_install.install_kimi_statusline(_kimi_statusline_command())
+        except ValueError:
+            pass
 
 
 # --- setup ---
@@ -447,6 +546,7 @@ def setup(auto: bool = False, components: SetupComponents | None = None, quiet: 
             p(f"[dim]{t('codex_not_found')}[/dim]")
 
     if has_kimi:
+        _setup_kimi_statusline(components, quiet)
         _setup_kimi_sidebar(quiet)
     else:
         if not auto:
@@ -598,9 +698,51 @@ def _setup_codex_sidebar(quiet: bool = False) -> None:
         )
 
 
+def _setup_kimi_statusline(components: SetupComponents, quiet: bool = False) -> None:
+    """Kimi 端装/卸 statusline（tui.toml 的 [status_line].command）。意图先落盘（镜像 _setup_codex）。
+    opt-out（components.kimi_statusline=False）删脚本 + 只摘 tt 的 command，用户自定义完全不碰；
+    用户自定义 command 存在时即便选了 True 也绝不覆盖（do-no-harm，同 CC 哲学）。"""
+    p = (lambda *a, **k: None) if quiet else get_console().print
+    config.save_kimi_statusline(components.kimi_statusline)  # 写入意图（任何文件操作之前）
+
+    if not components.kimi_statusline:
+        _remove_kimi_statusline_artifacts()
+        p(f"[dim]{t('kimi_statusline_skipped')}[/dim]")
+        return
+
+    if sidebar_install.kimi_statusline_user_custom():
+        p(f"[yellow]{t('kimi_statusline_skipped_custom')}[/yellow]")
+        return
+
+    _write_kimi_statusline_script()
+    previous = sidebar_install.kimi_statusline_tui_command()
+    try:
+        changed = sidebar_install.install_kimi_statusline(_kimi_statusline_command())
+    except ValueError:
+        # tui.toml 损坏时不能静默覆盖（可能是用户手改打错）——报错跳过；错误不受 quiet 抑制
+        get_console().print(f"[red]{t('kimi_tui_corrupt', path=sidebar_install.KIMI_TUI)}[/red]")
+        return
+    if changed:
+        key = "kimi_statusline_synced" if previous else "kimi_statusline_installed"
+        p(f"[green]✓[/green] {t(key)}")
+        p(f"[dim]{t('kimi_statusline_hint')}[/dim]")
+
+
+def _remove_kimi_statusline_artifacts() -> None:
+    """删 Kimi statusline 运行产物（脚本 + state 缓存）+ 只摘 tui.toml 里 tt 的 command。
+    opt-out 与 unsetup 共用；损坏 tui.toml 无法定位 tt command → 不碰（只删脚本/缓存）。"""
+    for path in (KIMI_STATUSLINE_HOOK_PATH, KIMI_STATUSLINE_STATE_PATH):
+        if os.path.exists(path):
+            os.remove(path)
+    try:
+        sidebar_install.uninstall_kimi_statusline()
+    except ValueError:
+        pass
+
+
 def _setup_kimi_sidebar(quiet: bool = False) -> None:
     """Kimi 端：安装 $KIMI_CODE_HOME/skills 下的 tt-sidebar Skill + config.toml 的
-    UserPromptSubmit hook（Kimi 无 statusline 组件，仅 sidebar 事件通道）。"""
+    UserPromptSubmit hook（sidebar 事件通道；statusline 组件由 _setup_kimi_statusline 负责）。"""
     p = (lambda *a, **k: None) if quiet else get_console().print
     try:
         skill_changed = sidebar_install.install_kimi_skill()
@@ -637,6 +779,7 @@ def unsetup() -> None:
         _unsetup_codex()
         _unsetup_codex_sidebar()
     if has_kimi:
+        _unsetup_kimi_statusline()
         _unsetup_kimi_sidebar()
     if not has_cc and not has_codex and not has_kimi:
         get_console().print(f"[dim]{t('no_agent_detected')}[/dim]")
@@ -710,6 +853,23 @@ def _unsetup_codex_sidebar() -> None:
         return
     if hook_removed:
         get_console().print(f"[green]✓[/green] {t('codex_hooks_removed')}")
+
+
+def _unsetup_kimi_statusline() -> None:
+    """卸载 Kimi statusline：删脚本 + state 缓存 + 只摘 tui.toml 里 tt 的 command。
+    与 _unsetup_claude/_unsetup_codex 一致：不动意图字段（用户重跑 tt setup 时可按原意图恢复）。"""
+    for path, key in ((KIMI_STATUSLINE_HOOK_PATH, "deleted_file"),
+                      (KIMI_STATUSLINE_STATE_PATH, "deleted_cache")):
+        if os.path.exists(path):
+            os.remove(path)
+            get_console().print(f"[green]✓[/green] {t(key, path=path)}")
+    try:
+        removed = sidebar_install.uninstall_kimi_statusline()
+    except ValueError:
+        get_console().print(f"[red]{t('kimi_tui_corrupt_unsetup', path=sidebar_install.KIMI_TUI)}[/red]")
+        return
+    if removed:
+        get_console().print(f"[green]✓[/green] {t('kimi_statusline_removed')}")
 
 
 def _unsetup_kimi_sidebar() -> None:

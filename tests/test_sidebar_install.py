@@ -323,3 +323,138 @@ def test_kimi_hook_normalized_current_block_is_up_to_date(tmp_path, monkeypatch)
     assert not sidebar_install.kimi_hooks_need_sync()
     assert not sidebar_install.install_kimi_hooks()
     assert path.read_text(encoding="utf-8") == normalized  # 一字节都不动
+
+
+# --- Kimi Code statusline（tui.toml 的 [status_line].command） ---
+
+
+def test_kimi_statusline_tui_install_idempotent_and_uninstall_restores(tmp_path, monkeypatch):
+    path = tmp_path / ".kimi-code" / "tui.toml"
+    path.parent.mkdir()
+    user_head = 'theme = "mocha"\n'
+    path.write_text(user_head, encoding="utf-8")
+    monkeypatch.setattr(sidebar_install, "KIMI_TUI", str(path))
+    command = '"/venv/bin/python" "/cfg/token-tracker/kimi-statusline.py"'
+
+    assert sidebar_install.kimi_statusline_tui_command() is None
+    assert sidebar_install.kimi_statusline_needs_sync(command)
+    assert sidebar_install.install_kimi_statusline(command)
+    assert not sidebar_install.install_kimi_statusline(command)  # 幂等
+    assert not sidebar_install.kimi_statusline_needs_sync(command)
+    assert sidebar_install.kimi_statusline_hook_present()
+
+    content = path.read_text(encoding="utf-8")
+    assert content.startswith(user_head)  # 用户配置原样保留，[status_line] 追加在末尾
+    parsed = tomllib.loads(content)
+    assert parsed["theme"] == "mocha"
+    assert parsed["status_line"]["command"] == command
+
+    # 换了命令（新解释器）→ 需要重同步；原位替换而非叠加
+    new_command = '"/new/python" "/cfg/token-tracker/kimi-statusline.py"'
+    assert sidebar_install.kimi_statusline_needs_sync(new_command)
+    assert sidebar_install.install_kimi_statusline(new_command)
+    content = path.read_text(encoding="utf-8")
+    assert content.count("kimi-statusline.py") == 1
+    assert '"/new/python"' in content
+
+    assert sidebar_install.uninstall_kimi_statusline()
+    assert path.read_text(encoding="utf-8") == user_head  # 精确还原（含分隔空行被吃掉）
+    assert not sidebar_install.uninstall_kimi_statusline()
+    assert not sidebar_install.kimi_statusline_hook_present()
+
+
+def test_kimi_statusline_tui_installs_into_missing_file(tmp_path, monkeypatch):
+    path = tmp_path / "tui.toml"
+    monkeypatch.setattr(sidebar_install, "KIMI_TUI", str(path))
+    command = '"/venv/bin/python" "/cfg/kimi-statusline.py"'
+
+    assert sidebar_install.install_kimi_statusline(command)
+    parsed = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert parsed["status_line"]["command"] == command
+
+
+def test_kimi_statusline_tui_preserves_user_items(tmp_path, monkeypatch):
+    # [status_line] 表已有用户 items：command 插在表头后、items 不动；卸载只摘 command 行，表保留。
+    path = tmp_path / "tui.toml"
+    original = '[status_line]\nitems = ["model", "cwd"]\n'
+    path.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(sidebar_install, "KIMI_TUI", str(path))
+    command = '"/venv/bin/python" "/cfg/kimi-statusline.py"'
+
+    assert sidebar_install.install_kimi_statusline(command)
+    parsed = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert parsed["status_line"]["items"] == ["model", "cwd"]
+    assert parsed["status_line"]["command"] == command
+
+    assert sidebar_install.uninstall_kimi_statusline()
+    assert path.read_text(encoding="utf-8") == original  # 用户 items 表一字不动
+
+
+def test_kimi_statusline_tui_user_custom_never_overwritten(tmp_path, monkeypatch):
+    # 用户自己的 status_line.command（非空、无 tt token）：装/卸/同步判定全部绕行。
+    path = tmp_path / "tui.toml"
+    original = '[status_line]\ncommand = "/usr/bin/my-own-statusline --foo"\n'
+    path.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(sidebar_install, "KIMI_TUI", str(path))
+    command = '"/venv/bin/python" "/cfg/kimi-statusline.py"'
+
+    assert sidebar_install.kimi_statusline_user_custom()
+    assert not sidebar_install.kimi_statusline_needs_sync(command)
+    assert not sidebar_install.install_kimi_statusline(command)
+    assert not sidebar_install.uninstall_kimi_statusline()
+    assert path.read_text(encoding="utf-8") == original  # 一字节都不动
+
+
+def test_kimi_statusline_tui_empty_command_is_replaced(tmp_path, monkeypatch):
+    # 空 command（用户没配 / 内置占位）不算自定义，可被 tt 接管。
+    path = tmp_path / "tui.toml"
+    path.write_text('[status_line]\ncommand = ""\nitems = ["model"]\n', encoding="utf-8")
+    monkeypatch.setattr(sidebar_install, "KIMI_TUI", str(path))
+    command = '"/venv/bin/python" "/cfg/kimi-statusline.py"'
+
+    assert not sidebar_install.kimi_statusline_user_custom()
+    assert sidebar_install.kimi_statusline_needs_sync(command)
+    assert sidebar_install.install_kimi_statusline(command)
+    parsed = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert parsed["status_line"]["command"] == command
+    assert parsed["status_line"]["items"] == ["model"]
+
+
+def test_kimi_statusline_tui_normalized_command_is_up_to_date(tmp_path, monkeypatch):
+    """Kimi CLI 重写 tui.toml 会把 literal string 归一化成 basic string（单引号→双引号）：
+    语义上已是最新 → needs_sync 为 False、不做任何重写，避免 tt 与 Kimi 互相重写抖动。"""
+    path = tmp_path / "tui.toml"
+    command = '"/venv/bin/python" "/cfg/token-tracker/kimi-statusline.py"'
+    normalized = (
+        'theme = "mocha"\n\n'
+        "[status_line]\n"
+        'command = "\\"/venv/bin/python\\" \\"/cfg/token-tracker/kimi-statusline.py\\""\n'
+    )
+    path.write_text(normalized, encoding="utf-8")
+    monkeypatch.setattr(sidebar_install, "KIMI_TUI", str(path))
+
+    assert sidebar_install.kimi_statusline_tui_command() == command
+    assert sidebar_install.kimi_statusline_hook_present()
+    assert not sidebar_install.kimi_statusline_user_custom()
+    assert not sidebar_install.kimi_statusline_needs_sync(command)
+    assert not sidebar_install.install_kimi_statusline(command)
+    assert path.read_text(encoding="utf-8") == normalized  # 一字节都不动
+
+    # 归一化形态也能精确卸载（识别按 token，不按引号风格）
+    assert sidebar_install.uninstall_kimi_statusline()
+    assert path.read_text(encoding="utf-8") == 'theme = "mocha"\n'
+
+
+def test_kimi_statusline_tui_refuses_corrupt_toml(tmp_path, monkeypatch):
+    path = tmp_path / "tui.toml"
+    path.write_text("status_line = [broken", encoding="utf-8")
+    monkeypatch.setattr(sidebar_install, "KIMI_TUI", str(path))
+    command = '"/venv/bin/python" "/cfg/kimi-statusline.py"'
+
+    assert sidebar_install.kimi_statusline_tui_command() is None
+    assert not sidebar_install.kimi_statusline_needs_sync(command)  # 损坏 → 不静默覆盖
+    with pytest.raises(ValueError):
+        sidebar_install.install_kimi_statusline(command)
+    with pytest.raises(ValueError):
+        sidebar_install.uninstall_kimi_statusline()
+    assert path.read_text(encoding="utf-8") == "status_line = [broken"

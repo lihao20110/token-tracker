@@ -33,6 +33,9 @@ def _isolate_real_home(tmp_path, monkeypatch):
         sidebar_install, "KIMI_SKILL_DIR", str(home / ".kimi-code" / "skills" / "tt-sidebar")
     )
     monkeypatch.setattr(hooks, "CODEX_STATUSLINE_HOOK_PATH", str(tt / "codex-statusline.py"))
+    monkeypatch.setattr(hooks, "KIMI_STATUSLINE_HOOK_PATH", str(tt / "kimi-statusline.py"))
+    monkeypatch.setattr(hooks, "KIMI_STATUSLINE_STATE_PATH", str(tt / "tt-kimi-statusline.json"))
+    monkeypatch.setattr(sidebar_install, "KIMI_TUI", str(home / ".kimi-code" / "tui.toml"))
     monkeypatch.setattr(sidebar_install, "CODEX_HOOKS", str(home / ".codex" / "hooks.json"))
     monkeypatch.setattr(
         sidebar_install, "SIDEBAR_SKILL_DIR", str(home / ".agents" / "skills" / "tt-sidebar")
@@ -1068,6 +1071,7 @@ def test_ask_components_asks_cc_then_codex(monkeypatch):
 
     monkeypatch.setattr(wizard, "_has_cc", lambda: True)
     monkeypatch.setattr(wizard, "_has_codex", lambda: True)
+    monkeypatch.setattr(wizard, "_has_kimi", lambda: False)  # 本机装有 Kimi，固定关掉、问题数稳定
     monkeypatch.setattr(wizard, "recommended_components",
                         lambda: hooks.SetupComponents(cc_statusline=False, codex_faux_statusline=True))
 
@@ -1088,6 +1092,7 @@ def test_ask_components_cc_only(monkeypatch):
     calls: list = []
     monkeypatch.setattr(wizard, "_has_cc", lambda: True)
     monkeypatch.setattr(wizard, "_has_codex", lambda: False)
+    monkeypatch.setattr(wizard, "_has_kimi", lambda: False)  # 本机装有 Kimi，固定关掉、问题数稳定
     monkeypatch.setattr(wizard, "recommended_components", lambda: hooks.SetupComponents())
     monkeypatch.setattr(wizard, "_ask_yes_no", lambda message, default: calls.append(message) or True)
     c = wizard.ask_components()
@@ -1100,6 +1105,7 @@ def test_ask_components_cc_only(monkeypatch):
 def _patch_kimi_home(monkeypatch, kimi_dir):
     monkeypatch.setattr(hooks, "_KIMI", str(kimi_dir))
     monkeypatch.setattr(sidebar_install, "KIMI_CONFIG", str(kimi_dir / "config.toml"))
+    monkeypatch.setattr(sidebar_install, "KIMI_TUI", str(kimi_dir / "tui.toml"))
     monkeypatch.setattr(sidebar_install, "KIMI_SKILL_DIR", str(kimi_dir / "skills" / "tt-sidebar"))
 
 
@@ -1140,3 +1146,281 @@ def test_update_hook_syncs_kimi_sidebar(tmp_path, monkeypatch):
     assert (kimi_dir / "skills" / "tt-sidebar" / "SKILL.md").exists()
     parsed = tomllib.loads((kimi_dir / "config.toml").read_text(encoding="utf-8"))
     assert any("prompt-hook --agent kimi" in h.get("command", "") for h in parsed["hooks"])
+
+
+# --- Kimi Code statusline（真 statusline：tui.toml [status_line].command + kimi-statusline.py） ---
+
+
+def test_kimi_statusline_render_injects_version_and_pricing():
+    # 版本号 + 主题配色 + 三档定价注入、占位符不残留、语法正确（脚本零依赖，无 __TT_PYTHON__ 需求）。
+    rendered = hooks._render_kimi_statusline_hook()
+    assert f'__version__ = "{hooks.KIMI_STATUSLINE_HOOK_VERSION}"' in rendered
+    assert "__KIMI_STATUSLINE_HOOK_VERSION__" not in rendered
+    assert "__STATUSLINE_TRUECOLOR__" not in rendered
+    assert "__KIMI_PRICING__" not in rendered
+    assert "kimi-k3" in rendered and "kimi-k2.7-code" in rendered and "kimi-k2.6" in rendered
+    compile(rendered, "<kimi-statusline>", "exec")
+
+
+def test_kimi_statusline_version_roundtrip(tmp_path, monkeypatch):
+    # _installed_kimi_statusline_version 读回的版本应与写入的 KIMI_STATUSLINE_HOOK_VERSION 一致。
+    script = tmp_path / "kimi-statusline.py"
+    monkeypatch.setattr(hooks, "KIMI_STATUSLINE_HOOK_PATH", str(script))
+    assert hooks._installed_kimi_statusline_version() is None  # 未装
+    hooks._write_kimi_statusline_script()
+    assert hooks._installed_kimi_statusline_version() == hooks.KIMI_STATUSLINE_HOOK_VERSION
+
+
+def _run_kimi_statusline(script, payload, home, kimi_dir, **extra_env):
+    env = dict(os.environ, HOME=str(home), KIMI_CODE_HOME=str(kimi_dir))
+    env.update(extra_env)
+    return subprocess.run([sys.executable, str(script)], input=json.dumps(payload),
+                          text=True, capture_output=True, env=env)
+
+
+def test_kimi_statusline_script_renders_one_line_and_accumulates(tmp_path):
+    # 脚本级：stdin 快照渲染一行（项目/模型/Ctx/token+成本）；wire.jsonl 按 offset 增量累计；
+    # 终端映射写 tt-terminal-map.json（与 Codex 同文件同 schema），不碰 CC 的 tt-status.json。
+    script = tmp_path / "kimi-statusline.py"
+    script.write_text(hooks._render_kimi_statusline_hook(), encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir()
+    kimi_dir = tmp_path / "kimi-home"
+    wire = kimi_dir / "sessions" / "wd_x" / "session_abc123" / "agents" / "main" / "wire.jsonl"
+    wire.parent.mkdir(parents=True)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+
+    def _record(i, o, cr=0, cc=0):
+        return json.dumps({"type": "usage.record", "model": "kimi-code/k3", "time": 1754000000000,
+                           "usage": {"inputOther": i, "output": o,
+                                     "inputCacheRead": cr, "inputCacheCreation": cc}})
+
+    wire.write_text(_record(1000, 1000) + "\n", encoding="utf-8")
+    payload = {"model": "K3", "cwd": str(proj), "gitBranch": "main",
+               "contextTokens": 82000, "maxContextTokens": 200000,
+               "sessionId": "session_abc123", "version": "0.1.0"}
+    term_env = {"ITERM_SESSION_ID": "w0t1p0:AAA-111", "TMUX_PANE": "%7"}
+    r1 = _run_kimi_statusline(script, payload, home, kimi_dir, **term_env)
+    assert r1.returncode == 0
+    lines = r1.stdout.splitlines()
+    assert len(lines) == 1  # Kimi 只取 stdout 首行：脚本必须单条输出
+    line1 = lines[0]
+    assert "[proj]" in line1 and "main" in line1
+    assert "Model: K3" in line1
+    assert "Ctx" in line1 and "41%" in line1          # 82000 / 200000
+    assert "⬆2k" in line1 and "$0.02" in line1        # kimi-k3 $3/$15：2000 tok → $0.018
+
+    cfg = home / ".config" / "token-tracker"
+    term_map = json.loads((cfg / "tt-terminal-map.json").read_text())["_terminal_map"]
+    assert term_map["session_abc123"] == {"iterm": "w0t1p0:AAA-111", "tmux": "%7"}
+    assert not (cfg / "tt-status.json").exists()      # 不碰 CC 心跳/status 缓存
+
+    # 第二帧：wire 追加一条 usage.record → 按 offset 增量累计（不全量重扫、不重复计数）
+    with open(wire, "a", encoding="utf-8") as f:
+        f.write(_record(2000, 2000, cr=6000) + "\n")
+    r2 = _run_kimi_statusline(script, payload, home, kimi_dir, **term_env)
+    line2 = r2.stdout.splitlines()[0]
+    assert "⬆12k" in line2 and "$0.06" in line2       # 累计 i3000/o3000/cr6000 → $0.0558
+    state = json.loads((cfg / "tt-kimi-statusline.json").read_text())
+    entry = state["session_abc123"]
+    assert entry["wire"] == str(wire)
+    assert entry["offset"] == wire.stat().st_size
+
+
+def test_kimi_statusline_script_fail_open(tmp_path):
+    # stdin 损坏 / 空输入：仍输出至多一行（Kimi 取首行），绝不 traceback 到 stdout。
+    script = tmp_path / "kimi-statusline.py"
+    script.write_text(hooks._render_kimi_statusline_hook(), encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir()
+    for raw in ("not json{{{", ""):
+        r = subprocess.run([sys.executable, str(script)], input=raw, text=True,
+                           capture_output=True, env=dict(os.environ, HOME=str(home)))
+        assert r.returncode == 0
+        assert "Traceback" not in r.stdout
+        assert len(r.stdout.splitlines()) <= 1
+
+
+def _kimi_only_home(tmp_path, monkeypatch):
+    """Kimi-only 隔离环境：_KIMI/config.toml/tui.toml/Skill 全指向 tmp 下已存在的 kimi 目录；
+    CC / Codex 目录不存在（autouse fixture 指向 tmp 下不存在的路径）；脚本/state/config 已由 fixture 隔离。"""
+    kimi_dir = tmp_path / "kimi-home"
+    kimi_dir.mkdir()
+    _patch_kimi_home(monkeypatch, kimi_dir)
+    return kimi_dir
+
+
+def _install_kimi_statusline(tmp_path, kimi_dir):
+    """把 tt 的 kimi statusline 实装到隔离环境（脚本 + tui command），返回 tui.toml 路径。"""
+    hooks._write_kimi_statusline_script()
+    sidebar_install.install_kimi_statusline(hooks._kimi_statusline_command())
+    return kimi_dir / "tui.toml"
+
+
+def test_kimi_statusline_active_double_factor(tmp_path, monkeypatch):
+    # 双因素：intent True AND 脚本存在 AND tui.toml command 含 tt token；任一不满足 → False。
+    kimi_dir = _kimi_only_home(tmp_path, monkeypatch)
+
+    assert hooks.kimi_statusline_active() is False  # intent None
+    config.save_kimi_statusline(False)
+    assert hooks.kimi_statusline_active() is False  # intent False
+    config.save_kimi_statusline(True)
+    assert hooks.kimi_statusline_active() is False  # 未实装
+    tui = _install_kimi_statusline(tmp_path, kimi_dir)
+    assert hooks.kimi_statusline_active() is True   # intent True + 实装好
+
+    tui.write_text('[status_line]\ncommand = "/usr/bin/my-own"\n', encoding="utf-8")
+    assert hooks.kimi_statusline_active() is False  # command 被改走
+    os.remove(hooks.KIMI_STATUSLINE_HOOK_PATH)
+    _install_kimi_statusline(tmp_path, kimi_dir)
+    os.remove(hooks.KIMI_STATUSLINE_HOOK_PATH)
+    assert hooks.kimi_statusline_active() is False  # 脚本缺失
+
+
+def test_is_setup_kimi_branch(tmp_path, monkeypatch):
+    # is_setup Kimi 分支三态：intent None → 未配；False → 放行（不强求文件）；True → 要求实装。
+    kimi_dir = _kimi_only_home(tmp_path, monkeypatch)
+
+    assert hooks.is_setup() is False  # intent None → 触发引导
+    config.save_kimi_statusline(False)
+    assert hooks.is_setup() is True   # opt-out 放行
+    config.save_kimi_statusline(True)
+    assert hooks.is_setup() is False  # intent True 但没实装
+    _install_kimi_statusline(tmp_path, kimi_dir)
+    assert hooks.is_setup() is True   # intent True + 实装好
+
+
+def test_recommended_components_kimi_probe(tmp_path, monkeypatch):
+    # Kimi 推荐默认三层：探测用户自定义 command（do-no-harm，优先于 intent）> 已记录 intent > True。
+    kimi_dir = _kimi_only_home(tmp_path, monkeypatch)
+    tui = kimi_dir / "tui.toml"
+
+    assert hooks.recommended_components().kimi_statusline is True   # 全新（无 tui.toml）→ 接管
+    tui.write_text('[status_line]\ncommand = "/usr/bin/my-own"\n', encoding="utf-8")
+    assert hooks.recommended_components().kimi_statusline is False  # 用户自定义 → 不接管
+    config.save_kimi_statusline(True)
+    assert hooks.recommended_components().kimi_statusline is False  # 探测优先于 intent（防静默再劫持）
+    tui.unlink()
+    assert hooks.recommended_components().kimi_statusline is True   # 无自定义 + intent True
+    config.save_kimi_statusline(False)
+    assert hooks.recommended_components().kimi_statusline is False  # 无自定义 + intent False
+
+
+def test_needs_update_kimi_statusline_gate(tmp_path, monkeypatch):
+    # setup_version>=5 门控 + 双因素：intent True 才要求脚本版本最新 + tui command 同步；
+    # 版本 < 5 或 intent False 都不算 needs_update。
+    kimi_dir = _kimi_only_home(tmp_path, monkeypatch)
+    tui = kimi_dir / "tui.toml"
+
+    config.save_setup_version(4)
+    config.save_kimi_statusline(True)
+    hooks._setup_kimi_sidebar(quiet=True)  # v4 产物（Skill + UserPromptSubmit hook）先装平
+    assert not hooks.needs_update()  # 版本 < 5：kimi statusline 还不算 setup 产物
+
+    config.save_setup_version(5)
+    assert hooks.needs_update()      # intent True 但未装 → 待更新
+    _install_kimi_statusline(tmp_path, kimi_dir)
+    assert not hooks.needs_update()  # 装好后收敛
+
+    tui.write_text("", encoding="utf-8")  # command 漂移（被清掉）
+    assert hooks.needs_update()
+    sidebar_install.install_kimi_statusline(hooks._kimi_statusline_command())
+
+    script = tmp_path / "_tt" / "kimi-statusline.py"
+    script.write_text(script.read_text(encoding="utf-8").replace(
+        hooks.KIMI_STATUSLINE_HOOK_VERSION, "0.9"), encoding="utf-8")
+    assert hooks.needs_update()      # 脚本版本落后
+
+    config.save_kimi_statusline(False)
+    assert not hooks.needs_update()  # intent False 不强求（双因素）
+
+
+def test_update_hook_syncs_kimi_statusline(tmp_path, monkeypatch):
+    # intent True + setup_version>=5：tui command 漂移后 update_hook 重烘焙脚本并重新接线，用户字段保留。
+    kimi_dir = _kimi_only_home(tmp_path, monkeypatch)
+    tui = _install_kimi_statusline(tmp_path, kimi_dir)
+    hooks._setup_kimi_sidebar(quiet=True)  # v4 产物装平，隔离 v5 断言
+    config.save_setup_version(config.SETUP_VERSION)
+    config.save_kimi_statusline(True)
+
+    tui.write_text('theme = "mocha"\n', encoding="utf-8")  # command 被清掉
+    assert hooks.needs_update()
+    hooks.update_hook()
+    assert not hooks.needs_update()
+    parsed = tomllib.loads(tui.read_text(encoding="utf-8"))
+    assert parsed["theme"] == "mocha"  # 用户字段保留
+    assert parsed["status_line"]["command"] == hooks._kimi_statusline_command()
+
+
+def test_setup_kimi_statusline_install_and_optout(tmp_path, monkeypatch):
+    # setup 装：意图落盘 + 脚本 + tui command；再 opt-out：脚本/command 全清、意图翻 False、用户字段保留。
+    kimi_dir = _kimi_only_home(tmp_path, monkeypatch)
+    tui = kimi_dir / "tui.toml"
+    tui.write_text('theme = "mocha"\n', encoding="utf-8")
+
+    hooks.setup(auto=True, quiet=True)  # components=None → recommended（无自定义 → 接管）
+    assert config.kimi_statusline_intent() is True
+    assert os.path.exists(hooks.KIMI_STATUSLINE_HOOK_PATH)
+    parsed = tomllib.loads(tui.read_text(encoding="utf-8"))
+    assert parsed["theme"] == "mocha"
+    assert "kimi-statusline.py" in parsed["status_line"]["command"]
+    assert hooks.is_setup() is True
+
+    hooks.setup(components=hooks.SetupComponents(kimi_statusline=False), quiet=True)
+    assert config.kimi_statusline_intent() is False
+    assert not os.path.exists(hooks.KIMI_STATUSLINE_HOOK_PATH)
+    parsed = tomllib.loads(tui.read_text(encoding="utf-8"))
+    assert "status_line" not in parsed  # tt 的 command 摘净、空表连表头一起删
+    assert parsed["theme"] == "mocha"
+    assert hooks.is_setup() is True  # opt-out 放行
+
+
+def test_setup_kimi_statusline_skips_user_custom(tmp_path, monkeypatch):
+    # 用户自定义 status_line.command：推荐默认 → opt-out 不碰；显式选 True 也只跳过、绝不覆盖。
+    kimi_dir = _kimi_only_home(tmp_path, monkeypatch)
+    tui = kimi_dir / "tui.toml"
+    original = '[status_line]\ncommand = "/usr/bin/my-own-statusline --foo"\n'
+    tui.write_text(original, encoding="utf-8")
+
+    hooks.setup(quiet=True)  # components=None → 探测到自定义 → opt-out
+    assert tui.read_text(encoding="utf-8") == original
+    assert config.kimi_statusline_intent() is False
+    assert not os.path.exists(hooks.KIMI_STATUSLINE_HOOK_PATH)
+    assert hooks.is_setup() is True  # 止血：之后不再反复触发 setup
+
+    hooks.setup(components=hooks.SetupComponents(kimi_statusline=True), quiet=True)
+    assert tui.read_text(encoding="utf-8") == original  # 显式选 True 也不覆盖用户自定义
+    assert not os.path.exists(hooks.KIMI_STATUSLINE_HOOK_PATH)
+
+
+def test_unsetup_removes_kimi_statusline(tmp_path, monkeypatch):
+    kimi_dir = _kimi_only_home(tmp_path, monkeypatch)
+    tui = kimi_dir / "tui.toml"
+    hooks.setup(auto=True, quiet=True)
+    state = tmp_path / "_tt" / "tt-kimi-statusline.json"
+    state.write_text("{}", encoding="utf-8")  # 模拟运行产物
+
+    hooks.unsetup()
+    assert not os.path.exists(hooks.KIMI_STATUSLINE_HOOK_PATH)
+    assert not state.exists()
+    assert "kimi-statusline" not in tui.read_text(encoding="utf-8")
+    assert not (kimi_dir / "skills" / "tt-sidebar" / "SKILL.md").exists()  # sidebar 产物也卸了
+
+
+def test_ask_components_kimi_question(monkeypatch):
+    # 向导：只有 Kimi 时只问 Kimi 题（步号从 1 开始）；默认值透传 recommended_components。
+    from token_tracker import wizard
+    asked: list = []
+    monkeypatch.setattr(wizard, "_has_cc", lambda: False)
+    monkeypatch.setattr(wizard, "_has_codex", lambda: False)
+    monkeypatch.setattr(wizard, "_has_kimi", lambda: True)
+    monkeypatch.setattr(wizard, "recommended_components",
+                        lambda: hooks.SetupComponents(kimi_statusline=False))
+    monkeypatch.setattr(wizard, "_ask_yes_no",
+                        lambda message, default: asked.append((message, default)) or default)
+    c = wizard.ask_components(step_prefix_fn=lambda i: f"[{i}] ")
+    assert [d for _, d in asked] == [False]  # 默认值来自 recommended（intent 感知）
+    assert asked[0][0].startswith("[1] ")
+    assert c.kimi_statusline is False
+    assert c.cc_statusline is True and c.codex_faux_statusline is True

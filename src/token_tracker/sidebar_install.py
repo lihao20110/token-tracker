@@ -509,3 +509,154 @@ def uninstall_kimi_hooks() -> bool:
         return False
     _write_text_atomic(KIMI_CONFIG, updated)
     return True
+
+
+# --- Kimi Code statusline（tui.toml 的 [status_line].command） ---
+#
+# 与 config.toml 同一套思路（见上方 _KIMI_HOOK_TOKEN）：Kimi CLI 重写 TOML 时会把单引号
+# literal string 归一化成双引号 basic string，所以**识别按 command 内容 token、同步判定按
+# tomllib 解析后的语义值**，不做文本比较；行扫描只用于文本级合并（保留用户其它字段/注释）。
+
+KIMI_TUI = os.path.join(kimi_home(), "tui.toml")
+# tt 托管 status_line.command 的唯一身份标识：command 里含此串即 tt 装的。
+_KIMI_STATUSLINE_TOKEN = "kimi-statusline.py"
+
+
+def _read_kimi_tui() -> str:
+    """读 Kimi tui.toml 原文；不存在返回空串；TOML 损坏抛 ValueError（不静默覆盖用户配置）。"""
+    if not os.path.exists(KIMI_TUI):
+        return ""
+    try:
+        with open(KIMI_TUI, encoding="utf-8") as f:
+            content = f.read()
+    except OSError:
+        return ""
+    try:
+        tomllib.loads(content)
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(KIMI_TUI) from exc
+    return content
+
+
+def kimi_statusline_tui_command() -> str | None:
+    """解析出的 [status_line].command；文件缺失 / 损坏 / 表缺失 / 字段非 str → None。"""
+    try:
+        content = _read_kimi_tui()
+    except ValueError:
+        return None
+    if not content:
+        return None
+    status_line = tomllib.loads(content).get("status_line")
+    if not isinstance(status_line, dict):
+        return None
+    command = status_line.get("command")
+    return command if isinstance(command, str) else None
+
+
+def kimi_statusline_user_custom() -> bool:
+    """command 存在、非空、不含 tt token → 用户自定义 statusline，绝不覆盖（do-no-harm，同 CC）。"""
+    command = kimi_statusline_tui_command()
+    return command is not None and command != "" and _KIMI_STATUSLINE_TOKEN not in command
+
+
+def kimi_statusline_needs_sync(expected: str) -> bool:
+    """非用户自定义 且 command != expected（语义比较——被 Kimi 归一化成双引号也算最新，不抖动）。
+    损坏 TOML 返回 False：自动更新绝不覆盖无法解析的用户配置。"""
+    try:
+        _read_kimi_tui()
+    except ValueError:
+        return False
+    if kimi_statusline_user_custom():
+        return False
+    return kimi_statusline_tui_command() != expected
+
+
+def kimi_statusline_hook_present() -> bool:
+    """tui.toml 的 status_line.command 是否指向 tt 的 kimi statusline 脚本。"""
+    command = kimi_statusline_tui_command()
+    return isinstance(command, str) and _KIMI_STATUSLINE_TOKEN in command
+
+
+def _kimi_statusline_table_range(lines: list[str]) -> tuple[int, int] | None:
+    """`[status_line]` 表的行区间 [start, end)（表头行到下个表头/EOF）；不存在返回 None。"""
+    starts = [i for i, line in enumerate(lines) if line.lstrip().startswith("[")]
+    for index, start in enumerate(starts):
+        if lines[start].strip() == "[status_line]":
+            end = starts[index + 1] if index + 1 < len(starts) else len(lines)
+            return start, end
+    return None
+
+
+def _is_command_key_line(line: str) -> bool:
+    """是否 `command = ...` 键行（不匹配 commands / 注释）。"""
+    stripped = line.lstrip()
+    return stripped.startswith("command") and stripped[len("command"):].lstrip().startswith("=")
+
+
+def install_kimi_statusline(command: str) -> bool:
+    """把 tt 的 status_line.command 合并进 tui.toml；用户其它字段/注释原样保留。
+
+    用户自定义 command → 不动返回 False；语义已一致（含归一化后的双引号形态）→ False（幂等）。
+    command 以 TOML literal string（单引号）写入。损坏 TOML 抛 ValueError，绝不静默覆盖。
+    """
+    if kimi_statusline_user_custom():
+        return False
+    content = _read_kimi_tui()
+    if kimi_statusline_tui_command() == command:
+        return False
+    new_line = f"command = '{command}'\n"
+    lines = content.splitlines(keepends=True)
+    table = _kimi_statusline_table_range(lines)
+    if table is None:
+        # 没有 [status_line] 表 → 在 EOF 追加（顶级表头，追加永远合法）
+        block = f"[status_line]\n{new_line}"
+        updated = block if not content.strip() else content.rstrip("\n") + "\n\n" + block
+    else:
+        start, end = table
+        for i in range(start + 1, end):
+            if _is_command_key_line(lines[i]):
+                # 用户自定义已在上面排除，剩下的 command 行是 tt 托管 / 空值 → 原位替换（保留缩进）
+                indent = lines[i][: len(lines[i]) - len(lines[i].lstrip())]
+                lines[i] = f"{indent}{new_line}"
+                break
+        else:
+            lines.insert(start + 1, new_line)  # 表存在但无 command 键 → 插在表头后
+        updated = "".join(lines)
+    if updated == content:
+        return False
+    _write_text_atomic(KIMI_TUI, updated)
+    return True
+
+
+def uninstall_kimi_statusline() -> bool:
+    """只删含 tt token 的 command 行；若 [status_line] 表因此无任何键（用户 items 保留则
+    不算空）连表头一起删，并吃掉安装时补的分隔空行（参照 _without_kimi_hook 的精确还原）。"""
+    if not os.path.exists(KIMI_TUI):
+        return False
+    content = _read_kimi_tui()
+    lines = content.splitlines(keepends=True)
+    table = _kimi_statusline_table_range(lines)
+    if table is None:
+        return False
+    start, end = table
+    command_idx = next(
+        (i for i in range(start + 1, end)
+         if _is_command_key_line(lines[i]) and _KIMI_STATUSLINE_TOKEN in lines[i]),
+        None,
+    )
+    if command_idx is None:
+        return False
+    # 表内除该 command 行外还有其它键（非空、非注释行）→ 只删 command 行，保留用户表
+    remaining = any(
+        line.strip() and not line.strip().startswith("#")
+        for i, line in enumerate(lines[start + 1:end], start + 1)
+        if i != command_idx
+    )
+    if remaining:
+        del lines[command_idx]
+    else:
+        while start > 0 and not lines[start - 1].strip():  # 安装时补的分隔空行随表一并移除
+            start -= 1
+        del lines[start:end]
+    _write_text_atomic(KIMI_TUI, "".join(lines))
+    return True

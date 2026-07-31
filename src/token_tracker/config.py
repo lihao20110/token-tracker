@@ -31,9 +31,10 @@ SCHEMA_VERSION = 1
 # 2（0.4.2）：强制所有现存用户（0.3.8/0.4.0=无字段=0、0.4.1=1，全 < 2）升级后重走一遍 setup。
 # 3：安装随包分发的用户级 Codex $tt-sidebar Skill + UserPromptSubmit hook。
 # 4：安装 Kimi Code 的 tt-sidebar Skill（$KIMI_CODE_HOME/skills）+ config.toml 的 UserPromptSubmit hook。
+# 5：安装 Kimi Code statusline（tui.toml 的 [status_line].command + kimi-statusline.py 脚本）。
 # 注：CC statusLine 变可选组件（issue #16/#17）时决定**不 bump**——小众需求不打断存量用户，
 # 存量 tt 用户 intent 缺失时由 is_setup 按「statusLine 已是 tt 的」推断为已配，想改的手动 tt setup。
-SETUP_VERSION = 4
+SETUP_VERSION = 5
 
 # 旧位置（独立 theme.json / lang.json），老用户首次读 config.json 不存在时自动合并迁移
 _LEGACY_THEME_PATH = os.path.join(CONFIG_DIR, "theme.json")
@@ -176,6 +177,17 @@ def save_cc_statusline(enabled: bool) -> None:
 def cc_statusline_intent() -> bool | None:
     """读用户对 CC statusLine 接管的意图。严格 bool；非 bool / 缺字段 → None（视为没表达）。"""
     val = load_config().get("cc_statusline")
+    return val if isinstance(val, bool) else None
+
+
+def save_kimi_statusline(enabled: bool) -> None:
+    """wizard 选完后写入意图（Kimi tui.toml 的 status_line.command 是否由 tt 接管）。"""
+    _save_field("kimi_statusline", bool(enabled))
+
+
+def kimi_statusline_intent() -> bool | None:
+    """读用户对 Kimi statusline 接管的意图。严格 bool；非 bool / 缺字段 → None（视为没表达）。"""
+    val = load_config().get("kimi_statusline")
     return val if isinstance(val, bool) else None
 
 
