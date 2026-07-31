@@ -48,7 +48,7 @@ STATUS_FILE = config.STATUS_FILE                          # CC statusline 缓存
 TERMINAL_MAP_FILE = config.TERMINAL_MAP_FILE              # Codex Stop hook 采集的终端定位映射
 HOOK_VERSION = "2.1"  # 2.0: 采集 _terminal_map（sidebar 点击跳转）；2.1: 共享状态无条件随帧携带、防异常帧清表
 STATUSLINE_HOOK_VERSION = "1.2"  # 1.2: 采集 Codex 会话终端定位，供 tt sidebar 点击跳转
-KIMI_STATUSLINE_HOOK_VERSION = "1.4"  # 1.4: 分支段补 git diff 统计（+A -D ?U，同 CC statusline L1）
+KIMI_STATUSLINE_HOOK_VERSION = "1.5"  # 1.5: 修并发半截行丢 usage.record（只消费完整行）；state/终端映射无变化跳过写盘
 
 CC_BACKUP_PATH = os.path.join(_TT, "cc-backup.json")
 CODEX_BACKUP_LEGACY = os.path.join(_TT, "codex-backup.json")  # 老用户残留，unsetup 时还能恢复
@@ -726,6 +726,9 @@ def _setup_kimi_statusline(components: SetupComponents, quiet: bool = False) -> 
         key = "kimi_statusline_synced" if previous else "kimi_statusline_installed"
         p(f"[green]✓[/green] {t(key)}")
         p(f"[dim]{t('kimi_statusline_hint')}[/dim]")
+    else:
+        # 无变更也要给确认行（与 CC/Codex 的「已配置」一致），否则用户无从判断组件状态
+        p(f"[green]✓[/green] {t('kimi_statusline_installed')}")
 
 
 def _remove_kimi_statusline_artifacts() -> None:

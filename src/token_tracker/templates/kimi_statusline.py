@@ -117,11 +117,16 @@ def _update_usage(session_id):
             try:
                 if offset > os.path.getsize(wire):  # 文件被截断 → 重置
                     offset, models = 0, {}
-                with open(wire, encoding="utf-8") as f:
+                with open(wire, "rb") as f:
                     f.seek(offset)
                     chunk = f.read()
-                    offset = f.tell()
-                for line in chunk.splitlines():
+                # 只消费完整行：Kimi 写 wire 与本脚本读取并发，chunk 末尾可能是写了一半的行。
+                # 不完整部分留给下一帧重读——否则 offset 越过半截行，该条 usage.record 永久丢失
+                #（解析失败被跳过、但字节已被 offset 吞掉）。
+                last_nl = chunk.rfind(b"\n")
+                complete = chunk[: last_nl + 1] if last_nl >= 0 else b""
+                offset += len(complete)
+                for line in complete.decode("utf-8", errors="replace").splitlines():
                     try:
                         data = json.loads(line)
                     except ValueError:
@@ -147,11 +152,13 @@ def _update_usage(session_id):
         state[session_id] = {"wire": wire, "offset": offset, "models": models}
         for key in list(state)[:-MAX_SESSIONS]:
             del state[key]
-        fd, tmp = tempfile.mkstemp(dir=parent, suffix=".tmp")
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(state, f)
-        os.replace(tmp, STATE_FILE)
-        tmp = None
+        # 无新增字节（offset/wire 都没动）→ 跳过写盘：Kimi 1s 节流反复调用，没必要每帧重写 state
+        if offset != entry.get("offset") or wire != entry.get("wire"):
+            fd, tmp = tempfile.mkstemp(dir=parent, suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(state, f)
+            os.replace(tmp, STATE_FILE)
+            tmp = None
         total = 0
         cost = 0.0
         for model, bucket in models.items():
@@ -209,6 +216,8 @@ def _record_terminal_map(session_id):
         term_map = data.get("_terminal_map") if isinstance(data, dict) else None
         if not isinstance(term_map, dict):
             term_map = {}
+        if term_map.get(session_id) == term:
+            return  # 映射无变化 → 跳过写盘（1s 节流反复调用，没必要每帧重写）
         term_map.pop(session_id, None)
         term_map[session_id] = term
         for key in list(term_map)[:-MAX_TERMINAL_MAPPINGS]:

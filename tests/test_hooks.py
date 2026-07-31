@@ -1403,6 +1403,17 @@ def test_setup_kimi_statusline_skips_user_custom(tmp_path, monkeypatch):
     assert not os.path.exists(hooks.KIMI_STATUSLINE_HOOK_PATH)
 
 
+def test_setup_kimi_statusline_prints_confirmation_when_unchanged(tmp_path, monkeypatch, capsys):
+    # 幂等重跑也要输出「已配置」确认行（与 CC/Codex 一致），否则用户无从判断组件状态
+    kimi_dir = _kimi_only_home(tmp_path, monkeypatch)
+    (kimi_dir / "tui.toml").write_text("", encoding="utf-8")
+    hooks.setup(auto=True, quiet=True)
+    capsys.readouterr()
+
+    hooks._setup_kimi_statusline(hooks.SetupComponents(kimi_statusline=True))
+    assert "Kimi Code 状态栏已配置" in capsys.readouterr().out
+
+
 def test_unsetup_removes_kimi_statusline(tmp_path, monkeypatch):
     kimi_dir = _kimi_only_home(tmp_path, monkeypatch)
     tui = kimi_dir / "tui.toml"
