@@ -44,11 +44,13 @@ CODEX_STATUSLINE_HOOK_PATH = os.path.join(_TT, "codex-statusline.py")
 KIMI_STATUSLINE_HOOK_PATH = os.path.join(_TT, "kimi-statusline.py")
 # Kimi statusline 的 wire offset / 累计缓存（脚本写；与 CC 心跳、终端映射分文件，避免并发互相覆盖）
 KIMI_STATUSLINE_STATE_PATH = os.path.join(_TT, "tt-kimi-statusline.json")
+# Kimi statusline 的 5h/7d 限额缓存（模板的 detached --refresh-quota 子进程写）
+KIMI_STATUSLINE_QUOTA_PATH = os.path.join(_TT, "tt-kimi-quota.json")
 STATUS_FILE = config.STATUS_FILE                          # CC statusline 缓存（单一权威定义在 config）
 TERMINAL_MAP_FILE = config.TERMINAL_MAP_FILE              # Codex Stop hook 采集的终端定位映射
 HOOK_VERSION = "2.1"  # 2.0: 采集 _terminal_map（sidebar 点击跳转）；2.1: 共享状态无条件随帧携带、防异常帧清表
 STATUSLINE_HOOK_VERSION = "1.2"  # 1.2: 采集 Codex 会话终端定位，供 tt sidebar 点击跳转
-KIMI_STATUSLINE_HOOK_VERSION = "1.7"  # 1.7: Limit 段去掉 'Limit:' 前缀，只留 5h/7d 百分比
+KIMI_STATUSLINE_HOOK_VERSION = "1.0"  # 1.0: 首个发布版（tui.toml [status_line].command，SETUP_VERSION 5 起纳入 setup 产物）
 
 CC_BACKUP_PATH = os.path.join(_TT, "cc-backup.json")
 CODEX_BACKUP_LEGACY = os.path.join(_TT, "codex-backup.json")  # 老用户残留，unsetup 时还能恢复
@@ -732,9 +734,11 @@ def _setup_kimi_statusline(components: SetupComponents, quiet: bool = False) -> 
 
 
 def _remove_kimi_statusline_artifacts() -> None:
-    """删 Kimi statusline 运行产物（脚本 + state 缓存）+ 只摘 tui.toml 里 tt 的 command。
+    """删 Kimi statusline 运行产物（脚本 + state/quota 缓存 + lock）+ 只摘 tui.toml 里 tt 的 command。
     opt-out 与 unsetup 共用；损坏 tui.toml 无法定位 tt command → 不碰（只删脚本/缓存）。"""
-    for path in (KIMI_STATUSLINE_HOOK_PATH, KIMI_STATUSLINE_STATE_PATH):
+    artifacts = [KIMI_STATUSLINE_HOOK_PATH, KIMI_STATUSLINE_STATE_PATH, KIMI_STATUSLINE_QUOTA_PATH]
+    artifacts += [f"{p}.lock" for p in artifacts[1:]]
+    for path in artifacts:
         if os.path.exists(path):
             os.remove(path)
     try:
@@ -859,12 +863,19 @@ def _unsetup_codex_sidebar() -> None:
 
 
 def _unsetup_kimi_statusline() -> None:
-    """卸载 Kimi statusline：删脚本 + state 缓存 + 只摘 tui.toml 里 tt 的 command。
+    """卸载 Kimi statusline：删脚本 + state/quota 缓存（含 lock）+ 只摘 tui.toml 里 tt 的 command。
     与 _unsetup_claude/_unsetup_codex 一致：不动意图字段（用户重跑 tt setup 时可按原意图恢复）。"""
-    for path, key in ((KIMI_STATUSLINE_HOOK_PATH, "deleted_file"),
-                      (KIMI_STATUSLINE_STATE_PATH, "deleted_cache")):
+    paths = [
+        KIMI_STATUSLINE_HOOK_PATH,
+        KIMI_STATUSLINE_STATE_PATH,
+        f"{KIMI_STATUSLINE_STATE_PATH}.lock",
+        KIMI_STATUSLINE_QUOTA_PATH,
+        f"{KIMI_STATUSLINE_QUOTA_PATH}.lock",
+    ]
+    for path in paths:
         if os.path.exists(path):
             os.remove(path)
+            key = "deleted_file" if path == KIMI_STATUSLINE_HOOK_PATH else "deleted_cache"
             get_console().print(f"[green]✓[/green] {t(key, path=path)}")
     try:
         removed = sidebar_install.uninstall_kimi_statusline()

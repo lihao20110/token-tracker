@@ -1496,9 +1496,23 @@ def test_setup_kimi_statusline_install_and_optout(tmp_path, monkeypatch):
     assert "kimi-statusline.py" in parsed["status_line"]["command"]
     assert hooks.is_setup() is True
 
+    # 模拟脚本运行产物：state/quota 缓存 + lock
+    for path in (
+        hooks.KIMI_STATUSLINE_STATE_PATH,
+        f"{hooks.KIMI_STATUSLINE_STATE_PATH}.lock",
+        hooks.KIMI_STATUSLINE_QUOTA_PATH,
+        f"{hooks.KIMI_STATUSLINE_QUOTA_PATH}.lock",
+    ):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("{}")
+
     hooks.setup(components=hooks.SetupComponents(kimi_statusline=False), quiet=True)
     assert config.kimi_statusline_intent() is False
     assert not os.path.exists(hooks.KIMI_STATUSLINE_HOOK_PATH)
+    assert not os.path.exists(hooks.KIMI_STATUSLINE_STATE_PATH)
+    assert not os.path.exists(hooks.KIMI_STATUSLINE_QUOTA_PATH)
+    assert not os.path.exists(f"{hooks.KIMI_STATUSLINE_STATE_PATH}.lock")
+    assert not os.path.exists(f"{hooks.KIMI_STATUSLINE_QUOTA_PATH}.lock")
     parsed = tomllib.loads(tui.read_text(encoding="utf-8"))
     assert "status_line" not in parsed  # tt 的 command 摘净、空表连表头一起删
     assert parsed["theme"] == "mocha"
