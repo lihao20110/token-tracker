@@ -275,13 +275,24 @@ def _load_local_mock() -> None:
 
 # --- 首次运行交互向导判定 ---
 
+def _in_agent_session_env() -> bool:
+    """精确的会话内硬信号（环境变量）。wizard 判定只用这个：kimi 的「workDir==cwd」目录
+    启发式无法区分「kimi 会话内」与「同项目目录的独立终端」，拿来压向导会把独立终端
+    误判成会话内（tt setup 不出向导直接默认全装）——启发式只用于 daily/weekly 报表收窄。"""
+    return bool(
+        os.environ.get("CODEX_THREAD_ID")
+        or os.environ.get("CODEX_SANDBOX")
+        or os.environ.get("CLAUDECODE")
+    )
+
+
 def _is_tty() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
 def _should_run_wizard() -> bool:
     """是否进交互向导：必须双 tty 且不在 AI 会话内（否则走 _auto_setup 非交互全装）。"""
-    return _is_tty() and not _current_session_agent()
+    return _is_tty() and not _in_agent_session_env()
 
 
 def _run_setup_flow() -> None:

@@ -191,14 +191,24 @@ def test_cmd_theme_shorthand_set(tmp_path, monkeypatch):
 
 def test_should_run_wizard(monkeypatch):
     # 双 tty + 非会话内 → 进向导；非 tty 或会话内 → 降级（plan 风险重点）。
+    # 会话判定只用硬环境信号（kimi 的目录启发式不能压向导——独立终端同项目目录会误判）。
     monkeypatch.setattr(cli, "_is_tty", lambda: True)
-    monkeypatch.setattr(cli, "_current_session_agent", lambda: None)
+    monkeypatch.setattr(cli, "_in_agent_session_env", lambda: False)
     assert cli._should_run_wizard() is True
     monkeypatch.setattr(cli, "_is_tty", lambda: False)
     assert cli._should_run_wizard() is False
     monkeypatch.setattr(cli, "_is_tty", lambda: True)
-    monkeypatch.setattr(cli, "_current_session_agent", lambda: "claude-code")
+    monkeypatch.setattr(cli, "_in_agent_session_env", lambda: True)
     assert cli._should_run_wizard() is False
+
+
+def test_in_agent_session_env_uses_only_hard_signals(monkeypatch):
+    # 回归：kimi 目录启发式命中（同项目目录有活跃 kimi 会话）不得影响 wizard 判定
+    for var in ("CODEX_THREAD_ID", "CODEX_SANDBOX", "CLAUDECODE"):
+        monkeypatch.delenv(var, raising=False)
+    assert cli._in_agent_session_env() is False
+    monkeypatch.setenv("CLAUDECODE", "1")
+    assert cli._in_agent_session_env() is True
 
 
 def test_save_resolve_lang_roundtrip(tmp_path, monkeypatch):
