@@ -75,9 +75,9 @@ Codex 官方暂不支持自定义 StatusLine。Token Tracker 通过 hook 注入�
 
 基于 Kimi Code 官方 `status_line` 接口（`tui.toml`），单行真彩色状态栏：
 
-`[项目](分支) │ Model: K3 │ Ctx ███ 31% │ ⬆21.2M $9.08`
+`[项目](分支* +A -D ?U) | Total: 21.2M | Cost: $9.08 | Model: K3/auto`（与 CC 状态栏同风格同序；官方快照无 5h/7d 限额数据，Limit 无法显示）
 
-- 项目 / 分支 / 模型 / 上下文占比来自 Kimi 官方快照；token 与成本由状态栏脚本按会话 `wire.jsonl` **增量**累计（offset 缓存，每秒级调用只读新增部分），成本按内置 Kimi 官方定价估算
+- 项目 / 分支 / 模型 / 权限模式来自 Kimi 官方快照，分支段的未提交增删行 / 未跟踪数按 `git diff --numstat` + `git ls-files` 统计（同 CC 状态栏）；Total 与 Cost 由状态栏脚本按会话 `wire.jsonl` **增量**累计（offset 缓存，每秒级调用只读新增部分），成本按内置 Kimi 官方定价估算
 - 已有自定义 `status_line.command` 时默认不覆盖（向导里选 No 也完全不碰）；`tt unsetup` 精确还原
 
 ## 报表速览

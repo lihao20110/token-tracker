@@ -1179,7 +1179,7 @@ def _run_kimi_statusline(script, payload, home, kimi_dir, **extra_env):
 
 
 def test_kimi_statusline_script_renders_one_line_and_accumulates(tmp_path):
-    # 脚本级：stdin 快照渲染一行（项目/模型/Ctx/token+成本）；wire.jsonl 按 offset 增量累计；
+    # 脚本级：stdin 快照渲染一行（[项目](分支) | Total | Model）；wire.jsonl 按 offset 增量累计；
     # 终端映射写 tt-terminal-map.json（与 Codex 同文件同 schema），不碰 CC 的 tt-status.json。
     script = tmp_path / "kimi-statusline.py"
     script.write_text(hooks._render_kimi_statusline_hook(), encoding="utf-8")
@@ -1190,6 +1190,15 @@ def test_kimi_statusline_script_renders_one_line_and_accumulates(tmp_path):
     wire.parent.mkdir(parents=True)
     proj = tmp_path / "proj"
     proj.mkdir()
+    # 真实 git 仓库：1 行已提交文件 → 改 +1 行（未提交）+ 1 个未跟踪文件，验证分支段 diff 统计
+    git_env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", HOME=str(home))
+    subprocess.run(["git", "init", "-b", "main"], cwd=proj, check=True, capture_output=True, env=git_env)
+    (proj / "a.txt").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "a.txt"], cwd=proj, check=True, capture_output=True, env=git_env)
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "init"],
+                   cwd=proj, check=True, capture_output=True, env=git_env)
+    (proj / "a.txt").write_text("x\ny\n", encoding="utf-8")   # +1 -0（未提交）
+    (proj / "new.txt").write_text("n\n", encoding="utf-8")    # 未跟踪 ?1
 
     def _record(i, o, cr=0, cc=0):
         return json.dumps({"type": "usage.record", "model": "kimi-code/k3", "time": 1754000000000,
@@ -1197,7 +1206,7 @@ def test_kimi_statusline_script_renders_one_line_and_accumulates(tmp_path):
                                      "inputCacheRead": cr, "inputCacheCreation": cc}})
 
     wire.write_text(_record(1000, 1000) + "\n", encoding="utf-8")
-    payload = {"model": "K3", "cwd": str(proj), "gitBranch": "main",
+    payload = {"model": "K3", "cwd": str(proj), "gitBranch": "main", "permissionMode": "auto",
                "contextTokens": 82000, "maxContextTokens": 200000,
                "sessionId": "session_abc123", "version": "0.1.0"}
     term_env = {"ITERM_SESSION_ID": "w0t1p0:AAA-111", "TMUX_PANE": "%7"}
@@ -1206,10 +1215,10 @@ def test_kimi_statusline_script_renders_one_line_and_accumulates(tmp_path):
     lines = r1.stdout.splitlines()
     assert len(lines) == 1  # Kimi 只取 stdout 首行：脚本必须单条输出
     line1 = lines[0]
-    assert "[proj]" in line1 and "main" in line1
-    assert "Model: K3" in line1
-    assert "Ctx" in line1 and "41%" in line1          # 82000 / 200000
-    assert "⬆2k" in line1 and "$0.02" in line1        # kimi-k3 $3/$15：2000 tok → $0.018
+    assert "[proj]" in line1 and "main*" in line1        # 分支 + 脏标记
+    assert "+1" in line1 and "?1" in line1               # git diff 统计（+1 -0 ?1，-0 不显示）
+    assert "Total: 2k" in line1 and "Cost: $0.02" in line1  # kimi-k3 $3/$15：2000 tok → $0.018
+    assert "Model: K3/auto" in line1                       # Model 段拼 permissionMode
 
     cfg = home / ".config" / "token-tracker"
     term_map = json.loads((cfg / "tt-terminal-map.json").read_text())["_terminal_map"]
@@ -1221,7 +1230,7 @@ def test_kimi_statusline_script_renders_one_line_and_accumulates(tmp_path):
         f.write(_record(2000, 2000, cr=6000) + "\n")
     r2 = _run_kimi_statusline(script, payload, home, kimi_dir, **term_env)
     line2 = r2.stdout.splitlines()[0]
-    assert "⬆12k" in line2 and "$0.06" in line2       # 累计 i3000/o3000/cr6000 → $0.0558
+    assert "Total: 12k" in line2 and "Cost: $0.06" in line2  # 累计 i3000/o3000/cr6000 → $0.0558
     state = json.loads((cfg / "tt-kimi-statusline.json").read_text())
     entry = state["session_abc123"]
     assert entry["wire"] == str(wire)

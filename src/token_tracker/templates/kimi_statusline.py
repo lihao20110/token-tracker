@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """token-tracker Kimi Code statusline（tui.toml [status_line].command）：渲染一行会话状态。
-[项目](分支) │ Model: <模型> │ Ctx <bar> <%> │ ⬆<会话累计 token> $<累计成本>
-数据：model/cwd/gitBranch/contextTokens/maxContextTokens/sessionId 取 stdin JSON 快照；
+[项目](分支* +A -D ?U) | Total: <会话累计 token> | Cost: $<累计成本> | Model: <模型>/<权限模式>
+（字段、顺序、配色与 CC statusline 同风格；Kimi 只取 stdout 首行，故压成一行。
+官方快照无 5h/7d 限额字段、wire.jsonl 无限额记录、脚本不联网 → Limit 无法显示）
+数据：model/cwd/gitBranch/permissionMode/sessionId 取 stdin JSON 快照；
 token/成本增量解析本会话 wire.jsonl（state 文件缓存 offset，避免每帧全量扫，300ms 上限内零网络）；
 终端映射写 tt-terminal-map.json（与 Codex 同文件同 schema），供 tt sidebar 点击跳转。
 被 Kimi 以 1s 节流反复调用：任何解析失败都 fail-open 输出一行，绝不 traceback 到 stdout。
@@ -10,6 +12,7 @@ __version__ = "__KIMI_STATUSLINE_HOOK_VERSION__"
 import glob
 import json
 import os
+import subprocess
 import sys
 import tempfile
 
@@ -35,26 +38,12 @@ def _kimi_home():
     return env if env else os.path.expanduser("~/.kimi-code")
 
 
-def _color(pct):
-    return C["bar_ok"] if pct < 50 else C["bar_warn"] if pct < 80 else C["bar_danger"]
-
-
 def fmt_tokens(n):
     if n >= 1_000_000:
         return f"{n / 1_000_000:.1f}M"
     if n >= 1_000:
         return f"{n / 1_000:.0f}k"
     return str(n)
-
-
-def _bar(pct, width=8):
-    """进度条（同 CC/Codex statusline）：█ 填充档位色 + ░ 空槽（>0 也染档位色），尾接 % 档位色。"""
-    pct = max(0.0, min(100.0, float(pct)))
-    filled = round(pct / 100 * width)
-    empty = width - filled
-    color = _color(pct)
-    empty_s = f"{color}{'░' * empty}{RST}" if pct > 0 and empty else "░" * empty
-    return f"{color}{'█' * filled}{RST}{empty_s} {color}{pct:.0f}%{RST}"
 
 
 def _pricing_for(model):
@@ -241,23 +230,54 @@ def _record_terminal_map(session_id):
             lock.close()
 
 
-def _ctx_pct(payload):
-    """当前 context 占用 % = contextTokens ÷ maxContextTokens（stdin 快照自带，无需解析 wire）。"""
-    used = payload.get("contextTokens")
-    max_tokens = payload.get("maxContextTokens")
-    if isinstance(used, (int, float)) and isinstance(max_tokens, (int, float)) and max_tokens > 0:
-        return used / max_tokens * 100
-    return None
+def _git_stat(cwd):
+    """相对 HEAD 的未提交增删行数 + 未跟踪文件数（同 CC statusline 的 git_diff_stat）。
+    分支名用 payload 的 gitBranch，只补 numstat / ls-files 两个子进程；超时压进 300ms 预算，
+    失败 / 非 git 仓库返回 (0, 0, 0)。"""
+    added = deleted = 0
+    try:
+        out = subprocess.check_output(
+            ["git", "diff", "HEAD", "--numstat"], cwd=cwd,
+            stderr=subprocess.DEVNULL, text=True, timeout=0.2)
+        for line in out.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+            a, d = parts[0], parts[1]
+            if a.isdigit():
+                added += int(a)
+            if d.isdigit():
+                deleted += int(d)
+    except Exception:
+        pass
+    untracked = 0
+    try:
+        out = subprocess.check_output(
+            ["git", "ls-files", "--others", "--exclude-standard"], cwd=cwd,
+            stderr=subprocess.DEVNULL, text=True, timeout=0.15)
+        untracked = sum(1 for ln in out.splitlines() if ln.strip())
+    except Exception:
+        pass
+    return added, deleted, untracked
 
 
 def _render_project(cwd, branch):
-    """[项目](分支)；git 信息直接用 payload 的 gitBranch（不调 git 子进程，300ms 预算内）。"""
+    """[项目](分支* +A -D ?U)（同 CC statusline L1）：分支名取 payload 的 gitBranch，
+    增删行 / 未跟踪数由 _git_stat 补；非 git 仓库或统计全 0 时退化为纯分支名。"""
     if not cwd:
         return ""
     name = os.path.basename(cwd.rstrip("/")) or cwd
     if not branch:
         return f"{BOLD}{C['project']}[{name}]{RST}"
-    return f"{BOLD}{C['project']}[{name}]{RST}({C['branch']}{branch}{RST})"
+    added, deleted, untracked = _git_stat(cwd)
+    inner = f"{C['branch']}{branch}{'*' if (added or deleted) else ''}{RST}"
+    if added:
+        inner += f" {C['added']}+{added}{RST}"
+    if deleted:
+        inner += f" {C['deleted']}-{deleted}{RST}"
+    if untracked:
+        inner += f" {C['untracked']}?{untracked}{RST}"
+    return f"{BOLD}{C['project']}[{name}]{RST}({inner})"
 
 
 def _render(payload):
@@ -266,6 +286,8 @@ def _render(payload):
     _record_terminal_map(session_id)
     total, cost = _update_usage(session_id)
 
+    # 与 CC statusline 同风格同序（单行版）：[项目](分支) | Total | Cost | Model/权限模式
+    # 官方快照无 5h/7d 限额字段、wire 无限额记录、脚本不联网 → Limit 无法显示。
     segments = []
     cwd = payload.get("cwd")
     branch = payload.get("gitBranch")
@@ -273,15 +295,16 @@ def _render(payload):
                            branch if isinstance(branch, str) else "")
     if proj:
         segments.append(proj)
+    if total:
+        segments.append(f"{C['total']}Total: {fmt_tokens(total)}{RST}")
+        segments.append(f"{C['total']}Cost: ${cost:.2f}{RST}")
     model = payload.get("model")
     if isinstance(model, str) and model:
+        perm = payload.get("permissionMode")
+        if isinstance(perm, str) and perm:
+            model += f"/{perm}"  # 同 CC Model 段拼 effort/fast 的做法
         segments.append(f"{C['model']}Model: {model}{RST}")
-    ctx = _ctx_pct(payload)
-    if ctx is not None:
-        segments.append(f"{C['label']}Ctx {RST}{_bar(ctx)}")
-    if total:
-        segments.append(f"{C['tokens']}⬆{fmt_tokens(total)} ${cost:.2f}{RST}")
-    return " │ ".join(segments)
+    return " | ".join(segments)
 
 
 def main():
