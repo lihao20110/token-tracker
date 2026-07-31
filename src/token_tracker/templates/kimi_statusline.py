@@ -36,6 +36,11 @@ C = __STATUSLINE_TRUECOLOR__
 RST = C["reset"]
 BOLD = "\033[1m"
 
+if sys.platform == "win32":
+    # Windows 控制台默认 GBK：项目名/分支名含非 GBK 字符时 print 会 UnicodeEncodeError，
+    # 退出码非 0 → Kimi 回退内置布局。与 CC statusline 同款防护。
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 # 定价由烘焙时从 analyzer.cost._fallback_pricing() 注入（kimi-k3 / kimi-k2.7-code / kimi-k2.6
 # 三档 dict 原样 repr）。状态栏不联网、查不到价的模型按 $0 计（不 warn，避免污染状态栏）。
 P = __KIMI_PRICING__
@@ -355,9 +360,17 @@ def _maybe_refresh_quota():
     except OSError:
         pass
     try:
+        # 跨平台 detach：POSIX 用 setsid，Windows 用 DETACHED_PROCESS + 新进程组
+        #（start_new_session 在 Windows 上被忽略，且配合 cmd /c 父进程杀树时子进程要能存活）
+        kwargs = {}
+        if os.name == "nt":
+            kwargs["creationflags"] = (getattr(subprocess, "DETACHED_PROCESS", 0)
+                                       | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        else:
+            kwargs["start_new_session"] = True
         subprocess.Popen([sys.executable, os.path.abspath(__file__), "--refresh-quota"],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True)
+                         stderr=subprocess.DEVNULL, **kwargs)
     except OSError:
         pass
 
@@ -387,7 +400,7 @@ def _git_stat(cwd):
     try:
         out = subprocess.check_output(
             ["git", "diff", "HEAD", "--numstat"], cwd=cwd,
-            stderr=subprocess.DEVNULL, text=True, timeout=0.2)
+            stderr=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", timeout=0.2)
         for line in out.splitlines():
             parts = line.split("\t")
             if len(parts) < 2:
@@ -403,7 +416,7 @@ def _git_stat(cwd):
     try:
         out = subprocess.check_output(
             ["git", "ls-files", "--others", "--exclude-standard"], cwd=cwd,
-            stderr=subprocess.DEVNULL, text=True, timeout=0.15)
+            stderr=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", timeout=0.15)
         untracked = sum(1 for ln in out.splitlines() if ln.strip())
     except Exception:
         pass

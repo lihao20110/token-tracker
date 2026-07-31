@@ -1160,6 +1160,8 @@ def test_kimi_statusline_render_injects_version_and_pricing():
     assert "__STATUSLINE_TRUECOLOR__" not in rendered
     assert "__KIMI_PRICING__" not in rendered
     assert "kimi-k3" in rendered and "kimi-k2.7-code" in rendered and "kimi-k2.6" in rendered
+    assert 'sys.platform == "win32"' in rendered   # Windows stdout UTF-8 防护（同 CC statusline）
+    assert "DETACHED_PROCESS" in rendered          # Windows detached 用 creationflags，不用 start_new_session
     compile(rendered, "<kimi-statusline>", "exec")
 
 

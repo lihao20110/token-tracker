@@ -50,7 +50,7 @@ STATUS_FILE = config.STATUS_FILE                          # CC statusline 缓存
 TERMINAL_MAP_FILE = config.TERMINAL_MAP_FILE              # Codex Stop hook 采集的终端定位映射
 HOOK_VERSION = "2.1"  # 2.0: 采集 _terminal_map（sidebar 点击跳转）；2.1: 共享状态无条件随帧携带、防异常帧清表
 STATUSLINE_HOOK_VERSION = "1.2"  # 1.2: 采集 Codex 会话终端定位，供 tt sidebar 点击跳转
-KIMI_STATUSLINE_HOOK_VERSION = "1.0"  # 1.0: 首个发布版（tui.toml [status_line].command，SETUP_VERSION 5 起纳入 setup 产物）
+KIMI_STATUSLINE_HOOK_VERSION = "1.1"  # 1.1: Windows 适配（stdout UTF-8、detached 用 creationflags、git 解码 errors=replace）
 
 CC_BACKUP_PATH = os.path.join(_TT, "cc-backup.json")
 CODEX_BACKUP_LEGACY = os.path.join(_TT, "codex-backup.json")  # 老用户残留，unsetup 时还能恢复
