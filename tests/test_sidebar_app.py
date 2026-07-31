@@ -257,6 +257,42 @@ async def test_split_fifo_event_updates_without_polling(monkeypatch):
     assert not os.path.exists(path)
 
 
+async def test_split_kimi_event_dedupes_without_turn_id(monkeypatch):
+    """Kimi 无 turn_id：hook 重复触发（config.toml 残留多托管块）时按同文+时间窗兜底去重。"""
+    from dataclasses import replace
+    from datetime import UTC, datetime, timedelta
+
+    from token_tracker.ui import sidebar_app as app_module
+
+    session_id = f"kimi-{uuid4()}"
+    monkeypatch.setattr(app_module, "scan_sessions", lambda **kwargs: [])
+    app = SidebarApp(
+        agent_ids=set(),
+        variant="split",
+        initial_sessions=[],
+        prompt_session_id=session_id,
+        prompt_channel_dir=os.getcwd(),
+    )
+    async with app.run_test(size=(50, 10)) as pilot:
+        await pilot.pause()
+        event = PromptEvent(session_id=session_id, prompt="同一条提示", agent_id="kimi", cwd="/tmp/p")
+        app._accept_prompt_event(event)
+        app._accept_prompt_event(event)  # 重复触发：无 turn_id、同文同窗口 → 去重
+        assert [prompt.text for prompt in app._sessions[0].prompts] == ["同一条提示"]
+
+        other = PromptEvent(session_id=session_id, prompt="另一条", agent_id="kimi", cwd="/tmp/p")
+        app._accept_prompt_event(other)  # 不同文本正常追加
+        assert [prompt.text for prompt in app._sessions[0].prompts] == ["同一条提示", "另一条"]
+
+        # 超过时间窗的同文重发是用户有意为之，算新提示
+        old = datetime.now(UTC) - timedelta(seconds=30)
+        session = app._sessions[0]
+        from token_tracker.sidebar import Prompt
+        app._sessions = [replace(session, prompts=[*session.prompts[:-1], Prompt("另一条", old)])]
+        app._accept_prompt_event(other)
+        assert [prompt.text for prompt in app._sessions[0].prompts] == ["同一条提示", "另一条", "另一条"]
+
+
 async def test_split_multiline_selection_excludes_tree_number_and_hanging_indent(monkeypatch):
     from datetime import UTC, datetime
 

@@ -272,3 +272,54 @@ def test_kimi_hook_refuses_corrupt_toml(tmp_path, monkeypatch):
     with pytest.raises(ValueError):
         sidebar_install.install_kimi_hooks()
     assert path.read_text(encoding="utf-8") == "default_model = [broken"
+
+
+def test_kimi_hook_collapses_normalized_duplicate_blocks(tmp_path, monkeypatch):
+    """Kimi CLI 重写 config.toml 会把 literal string 归一化成 basic string（单引号→双引号），
+    历史上旧正则识别不了导致托管块累积、每个提示词触发多次 hook。"""
+    path = tmp_path / "config.toml"
+    stale = (
+        'default_model = "kimi-code/k3"\n\n'
+        "[[hooks]]\n"
+        'event = "UserPromptSubmit"\n'
+        'command = "\\"/old/venv/bin/python3\\" -B -m token_tracker.sidebar_command prompt-hook --agent kimi"\n'
+        "timeout = 2\n\n"
+        "[[hooks]]\n"
+        'event = "UserPromptSubmit"\n'
+        'command = "\\"/another/python\\" -B -m token_tracker.sidebar_command prompt-hook --agent kimi"\n'
+        "timeout = 2\n"
+    )
+    path.write_text(stale, encoding="utf-8")
+    monkeypatch.setattr(sidebar_install, "KIMI_CONFIG", str(path))
+    monkeypatch.setattr(sidebar_install.sys, "executable", "/venv/bin/python")
+
+    assert sidebar_install.kimi_hooks_need_sync()
+    assert sidebar_install.install_kimi_hooks()
+    content = path.read_text(encoding="utf-8")
+    assert content.count("prompt-hook --agent kimi") == 1  # 两个旧块被收敛成一个
+    assert '"/venv/bin/python"' in content
+    assert content.startswith('default_model = "kimi-code/k3"')  # 用户配置保留
+    assert not sidebar_install.install_kimi_hooks()
+    assert not sidebar_install.kimi_hooks_need_sync()
+
+    assert sidebar_install.uninstall_kimi_hooks()
+    assert "prompt-hook --agent kimi" not in path.read_text(encoding="utf-8")
+
+
+def test_kimi_hook_normalized_current_block_is_up_to_date(tmp_path, monkeypatch):
+    """双引号归一化后的当前块语义上已是最新：不再判为待同步，避免 tt 与 Kimi 互相重写抖动。"""
+    path = tmp_path / "config.toml"
+    normalized = (
+        'default_model = "kimi-code/k3"\n\n'
+        "[[hooks]]\n"
+        'event = "UserPromptSubmit"\n'
+        'command = "\\"/venv/bin/python\\" -B -m token_tracker.sidebar_command prompt-hook --agent kimi"\n'
+        "timeout = 2\n"
+    )
+    path.write_text(normalized, encoding="utf-8")
+    monkeypatch.setattr(sidebar_install, "KIMI_CONFIG", str(path))
+    monkeypatch.setattr(sidebar_install.sys, "executable", "/venv/bin/python")
+
+    assert not sidebar_install.kimi_hooks_need_sync()
+    assert not sidebar_install.install_kimi_hooks()
+    assert path.read_text(encoding="utf-8") == normalized  # 一字节都不动

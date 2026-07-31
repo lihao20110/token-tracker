@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import stat
 import sys
 import tomllib
@@ -364,14 +363,10 @@ def uninstall_managed_hooks() -> bool:
 # --- Kimi Code（config.toml 的 [[hooks]] + $KIMI_CODE_HOME/skills） ---
 
 _KIMI_HOOK_COMMAND_ACTION = "prompt-hook --agent kimi"
-# 只认 tt 自己写入的整块 [[hooks]]（command 为 TOML literal string，含 prompt-hook --agent kimi 特征）；
-# 用户手写的其它 [[hooks]] 块一律不动
-_KIMI_HOOK_BLOCK_RE = re.compile(
-    r"\n*\[\[hooks\]\]\s*"
-    r'event = "UserPromptSubmit"\s*'
-    r"command = '[^'\n]*token_tracker\.sidebar_command prompt-hook --agent kimi[^'\n]*'\s*"
-    r"timeout = \d+\s*"
-)
+# tt 托管块的唯一身份标识是 command 里的这串 token；引号风格、键顺序、附加键都不参与判定。
+# Kimi CLI 自己重写 config.toml 时会把 literal string 归一化成 basic string（单引号变双引号），
+# 所以识别必须按「[[hooks]] 块内含 token」而不是逐字节匹配 tt 写入时的格式。
+_KIMI_HOOK_TOKEN = "token_tracker.sidebar_command prompt-hook --agent kimi"
 
 
 def kimi_skill_managed() -> bool:
@@ -416,14 +411,71 @@ def _read_kimi_config() -> str:
     return content
 
 
+def _kimi_managed_line_ranges(lines: list[str]) -> list[tuple[int, int]]:
+    """托管 [[hooks]] 块的行区间 [start, end)。按行扫描而不是正则整块匹配：
+    空行归属（前一个块的尾部 vs 后一个块的分隔）不会有歧义，删除后能精确还原用户文本。"""
+    starts = [i for i, line in enumerate(lines) if line.lstrip().startswith("[")]
+    ranges = []
+    for index, start in enumerate(starts):
+        if lines[start].strip() != "[[hooks]]":
+            continue
+        end = starts[index + 1] if index + 1 < len(starts) else len(lines)
+        if _KIMI_HOOK_TOKEN in "".join(lines[start:end]):
+            ranges.append((start, end))
+    return ranges
+
+
+def _kimi_hook_blocks(content: str) -> list[str]:
+    """所有 tt 托管的 [[hooks]] 块文本（含历史被 Kimi 归一化成双引号的旧块）。"""
+    lines = content.splitlines(keepends=True)
+    return ["".join(lines[start:end]) for start, end in _kimi_managed_line_ranges(lines)]
+
+
+def _kimi_block_entry(block: str) -> dict | None:
+    """块文本本身就是合法 TOML 片段，直接解析取首个表项；解析失败返回 None。"""
+    try:
+        data = tomllib.loads(block)
+    except tomllib.TOMLDecodeError:
+        return None
+    hooks = data.get("hooks")
+    if isinstance(hooks, list) and hooks and isinstance(hooks[0], dict):
+        return hooks[0]
+    return None
+
+
+def _kimi_hook_up_to_date(content: str) -> bool:
+    """语义判同步：恰好一个托管块且 event/command 与当前解释器一致。
+    不做文本级比较——引号风格被 Kimi 归一化后也算最新，避免 tt 与 Kimi 互相重写抖动。"""
+    blocks = _kimi_hook_blocks(content)
+    if len(blocks) != 1:
+        return False
+    entry = _kimi_block_entry(blocks[0])
+    if entry is None:
+        return False
+    expected = build_module_command(sys.executable or "python3", _KIMI_HOOK_COMMAND_ACTION)
+    return entry.get("event") == "UserPromptSubmit" and entry.get("command") == expected
+
+
 def _without_kimi_hook(content: str) -> tuple[str, bool]:
-    updated = _KIMI_HOOK_BLOCK_RE.sub("\n", content)
-    return updated, updated != content
+    lines = content.splitlines(keepends=True)
+    ranges = _kimi_managed_line_ranges(lines)
+    if not ranges:
+        return content, False
+    removed: set[int] = set()
+    for start, end in ranges:
+        # 块前的空行是安装时补的分隔空行，随块一并移除
+        while start > 0 and not lines[start - 1].strip():
+            start -= 1
+        removed.update(range(start, end))
+    updated = "".join(line for i, line in enumerate(lines) if i not in removed)
+    return updated, True
 
 
 def _with_kimi_hook(content: str) -> str:
-    """移除旧版托管块后在文件末尾追加当前块。[[hooks]] 是顶级 array-of-tables 头，
-    追加在 EOF 永远是合法 TOML，用户其它配置原样保留。"""
+    """已是最新就原样返回；否则移除全部旧托管块后在文件末尾追加当前块。
+    [[hooks]] 是顶级 array-of-tables 头，追加在 EOF 永远是合法 TOML，用户其它配置原样保留。"""
+    if _kimi_hook_up_to_date(content):
+        return content
     stripped, _removed = _without_kimi_hook(content)
     block = _kimi_hook_block()
     if not stripped.strip():

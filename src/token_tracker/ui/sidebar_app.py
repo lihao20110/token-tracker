@@ -53,6 +53,8 @@ from .themes import get_theme
 REFRESH_SECONDS = 5.0
 SPINNER_SECONDS = 0.5  # 动画/时钟帧间隔——只用缓存会话重绘，不触发磁盘扫描
 _TARGET_GONE_MARKER = "tt_jump_target_gone"  # AppleScript 未匹配到目标窗格的信号（tab 已关闭）
+# 无 turn_id 的 agent（Kimi）事件去重窗：同文提示词在窗口期内重复到达视为 hook 重复触发
+_DUP_PROMPT_WINDOW_SECONDS = 5.0
 
 
 def _jump_argvs(info: dict) -> list[list[str]] | None:
@@ -343,6 +345,16 @@ class SidebarApp(App[None]):
             self._seen_prompt_turns.add(event.turn_id)
         now = datetime.now(UTC)
         current = next((session for session in self._sessions if session.session_id == event.session_id), None)
+        if not event.turn_id and current is not None and current.prompts:
+            # Kimi 没有 turn_id，hook 重复触发（如 config.toml 残留多个托管块）时按
+            # 「同文 + 时间窗」兜底去重；用户隔几秒重发同一文本属正常新提示
+            last = current.prompts[-1]
+            if (
+                last.text == event.prompt
+                and last.timestamp is not None
+                and abs((now - last.timestamp).total_seconds()) <= _DUP_PROMPT_WINDOW_SECONDS
+            ):
+                return
         prompt = Prompt(event.prompt, now)
         if current is None:
             current = LiveSession(
