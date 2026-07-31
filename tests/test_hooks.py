@@ -9,7 +9,7 @@ import tomllib
 
 import pytest
 
-from token_tracker import config, hooks, sidebar_install
+from token_tracker import config, hooks, i18n, sidebar_install
 
 
 @pytest.fixture(autouse=True)
@@ -36,6 +36,7 @@ def _isolate_real_home(tmp_path, monkeypatch):
     monkeypatch.setattr(hooks, "CODEX_STATUSLINE_HOOK_PATH", str(tt / "codex-statusline.py"))
     monkeypatch.setattr(hooks, "KIMI_STATUSLINE_HOOK_PATH", str(tt / "kimi-statusline.py"))
     monkeypatch.setattr(hooks, "KIMI_STATUSLINE_STATE_PATH", str(tt / "tt-kimi-statusline.json"))
+    monkeypatch.setattr(hooks, "KIMI_STATUSLINE_QUOTA_PATH", str(tt / "tt-kimi-quota.json"))
     monkeypatch.setattr(sidebar_install, "KIMI_TUI", str(home / ".kimi-code" / "tui.toml"))
     monkeypatch.setattr(sidebar_install, "CODEX_HOOKS", str(home / ".codex" / "hooks.json"))
     monkeypatch.setattr(
@@ -1547,7 +1548,7 @@ def test_setup_kimi_statusline_prints_confirmation_when_unchanged(tmp_path, monk
     capsys.readouterr()
 
     hooks._setup_kimi_statusline(hooks.SetupComponents(kimi_statusline=True))
-    assert "Kimi Code 状态栏已配置" in capsys.readouterr().out
+    assert i18n.t("kimi_statusline_installed") in capsys.readouterr().out
 
 
 def test_unsetup_removes_kimi_statusline(tmp_path, monkeypatch):
