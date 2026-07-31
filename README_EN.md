@@ -74,7 +74,7 @@ Renders 24-bit truecolor, **does not enter the model context** (verified), and *
 
 Built on Kimi Code's official `status_line` API (`tui.toml`) — a single truecolor line:
 
-`[project](branch* +A -D ?U) | Total: 21.2M | Cost: $9.08 | Model: K3/auto` (same style as the CC status line; Kimi's official snapshot carries no 5h/7d quota data, so limits can't be shown)
+`[project](branch* +A -D ?U) | Total: 21.2M | Cost: $9.08 | Limit: 5h 18% | 7d 15% | Model: K3/auto` (same style as the CC status line; 5h/7d quota comes from the cloud `/usages` endpoint, cached and refreshed in the background every 2 minutes)
 
 - Project / branch / model / permission mode come from Kimi's official snapshot; the branch segment's uncommitted +/− line counts and untracked files are computed via `git diff --numstat` + `git ls-files` (same as the CC status line); Total and Cost are accumulated **incrementally** from the session's `wire.jsonl` by the status-line script (offset-cached, only new bytes are read per run), priced with the built-in official Kimi rates
 - An existing custom `status_line.command` is never overwritten by default (the wizard also lets you opt out); `tt unsetup` restores the exact prior state

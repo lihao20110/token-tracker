@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """token-tracker Kimi Code statusline（tui.toml [status_line].command）：渲染一行会话状态。
-[项目](分支* +A -D ?U) | Total: <会话累计 token> | Cost: $<累计成本> | Model: <模型>/<权限模式>
-（字段、顺序、配色与 CC statusline 同风格；Kimi 只取 stdout 首行，故压成一行。
-官方快照无 5h/7d 限额字段、wire.jsonl 无限额记录、脚本不联网 → Limit 无法显示）
+[项目](分支* +A -D ?U) | Total: <会话累计 token> | Cost: $<累计成本> | Limit: 5h X% | 7d Y% | Model: <模型>/<权限模式>
+（字段、顺序、配色与 CC statusline 同风格；Kimi 只取 stdout 首行（二进制 runStatusLineCommand 硬编码截断），故压成一行。
+5h/7d 限额走云端 GET <provider.base_url>/usages（OAuth access_token，同 CLI /usage 端点）：
+渲染只读本地配额缓存、零网络；缓存超 120s 派生 detached 子进程后台刷新，token 过期/失败就整段不显示）
 数据：model/cwd/gitBranch/permissionMode/sessionId 取 stdin JSON 快照；
 token/成本增量解析本会话 wire.jsonl（state 文件缓存 offset，避免每帧全量扫，300ms 上限内零网络）；
 终端映射写 tt-terminal-map.json（与 Codex 同文件同 schema），供 tt sidebar 点击跳转。
@@ -15,9 +16,17 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.request
 
 STATE_FILE = os.path.join(os.path.expanduser("~/.config/token-tracker"), "tt-kimi-statusline.json")
 TERMINAL_MAP_FILE = os.path.join(os.path.expanduser("~/.config/token-tracker"), "tt-terminal-map.json")
+QUOTA_CACHE_FILE = os.path.join(os.path.expanduser("~/.config/token-tracker"), "tt-kimi-quota.json")
+QUOTA_LOCK_FILE = QUOTA_CACHE_FILE + ".lock"     # 只取 mtime 当「上次派生刷新」标记，不做 flock
+QUOTA_REFRESH_INTERVAL = 120                     # 后台刷新间隔（秒）：每 2 分钟最多一次 API 请求
+QUOTA_DISPLAY_MAX_AGE = 900                      # 缓存超 15 分钟视为失效，Limit 段不显示
+QUOTA_FETCH_TIMEOUT = 8                          # 与 CLI fetchManagedUsage 一致
+DEFAULT_QUOTA_URL = "https://api.kimi.com/coding/v1/usages"
 MAX_SESSIONS = 20
 MAX_TERMINAL_MAPPINGS = 20
 
@@ -239,6 +248,139 @@ def _record_terminal_map(session_id):
             lock.close()
 
 
+def _pct_color(pct):
+    return C["bar_ok"] if pct < 50 else C["bar_warn"] if pct < 80 else C["bar_danger"]
+
+
+def _quota_url():
+    """/usages 端点（同 CLI /usage）：TT_KIMI_QUOTA_URL 覆盖 > config.toml managed provider
+    base_url > 官方默认。"""
+    env = os.environ.get("TT_KIMI_QUOTA_URL", "").strip()
+    if env:
+        return env
+    try:
+        import tomllib
+        with open(os.path.join(_kimi_home(), "config.toml"), "rb") as f:
+            cfg = tomllib.load(f)
+        base = ((cfg.get("providers") or {}).get("managed:kimi-code") or {}).get("base_url", "")
+        base = base.strip().rstrip("/")
+        if base:
+            return base + "/usages"
+    except Exception:
+        pass
+    return DEFAULT_QUOTA_URL
+
+
+def _read_quota_token():
+    """读 OAuth access_token；过期/缺失返回 None（状态栏不做 refresh_token 流程，
+    CLI 日常使用会自行刷新并写回凭证文件）。"""
+    try:
+        with open(os.path.join(_kimi_home(), "credentials", "kimi-code.json"), encoding="utf-8") as f:
+            cred = json.load(f)
+        token = cred.get("access_token")
+        exp = cred.get("expires_at")
+        if isinstance(token, str) and token and isinstance(exp, (int, float)) and exp > time.time():
+            return token
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_quota():
+    """调 /usages 拿 5h/7d 用量写缓存（detached 子进程模式 --refresh-quota 调用）。
+    任何失败都不写缓存——旧缓存自然超过 QUOTA_DISPLAY_MAX_AGE 后 Limit 段自动消失。"""
+    token = _read_quota_token()
+    if not token:
+        return
+    try:
+        req = urllib.request.Request(_quota_url(), headers={
+            "Authorization": f"Bearer {token}", "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=QUOTA_FETCH_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return
+    if not isinstance(data, dict):
+        return
+
+    def _pct(detail):
+        if not isinstance(detail, dict):
+            return None
+        try:
+            limit = float(detail.get("limit") or 0)
+            used = float(detail.get("used") or 0)
+        except (TypeError, ValueError):
+            return None
+        return used / limit * 100 if limit > 0 else None
+
+    five = None
+    for entry in data.get("limits") or []:
+        win = (entry or {}).get("window") or {}
+        if win.get("duration") == 300 and win.get("timeUnit") == "TIME_UNIT_MINUTE":
+            five = _pct((entry or {}).get("detail"))
+            break
+    cache = {"fetched_at": int(time.time()), "five_hour": five, "seven_day": _pct(data.get("usage"))}
+    tmp = None
+    try:
+        parent = os.path.dirname(QUOTA_CACHE_FILE)
+        os.makedirs(parent, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=parent, suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(cache, f)
+        os.replace(tmp, QUOTA_CACHE_FILE)
+        tmp = None
+    except OSError:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _maybe_refresh_quota():
+    """缓存与上次派生都超 120s → detached 子进程后台拉 /usages（spawn ~10ms，不吃 300ms 预算）。
+    lock 文件只做 mtime 标记：刷新在途（最长 8s 超时）或失败冷却期内不重复派生。"""
+    now = time.time()
+
+    def _age(path):
+        try:
+            return now - os.path.getmtime(path)
+        except OSError:
+            return float("inf")
+
+    if _age(QUOTA_CACHE_FILE) < QUOTA_REFRESH_INTERVAL or _age(QUOTA_LOCK_FILE) < QUOTA_REFRESH_INTERVAL:
+        return
+    try:
+        os.makedirs(os.path.dirname(QUOTA_LOCK_FILE), exist_ok=True)
+        open(QUOTA_LOCK_FILE, "a").close()
+    except OSError:
+        pass
+    try:
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), "--refresh-quota"],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        pass
+
+
+def _render_quota():
+    """读配额缓存渲染 ['Limit: 5h X%', '7d Y%']；缓存缺失/超 QUOTA_DISPLAY_MAX_AGE → 不显示。"""
+    try:
+        if time.time() - os.path.getmtime(QUOTA_CACHE_FILE) > QUOTA_DISPLAY_MAX_AGE:
+            return []
+        with open(QUOTA_CACHE_FILE, encoding="utf-8") as f:
+            cache = json.load(f)
+    except Exception:
+        return []
+    segs = []
+    for key, label in (("five_hour", "5h"), ("seven_day", "7d")):
+        pct = cache.get(key) if isinstance(cache, dict) else None
+        if isinstance(pct, (int, float)):
+            segs.append(f"{C['label']}{label}:{RST} {_pct_color(pct)}{pct:.0f}%{RST}")
+    if segs:
+        segs[0] = f"{C['label']}Limit:{RST} " + segs[0]
+    return segs
+
+
 def _git_stat(cwd):
     """相对 HEAD 的未提交增删行数 + 未跟踪文件数（同 CC statusline 的 git_diff_stat）。
     分支名用 payload 的 gitBranch，只补 numstat / ls-files 两个子进程；超时压进 300ms 预算，
@@ -295,8 +437,8 @@ def _render(payload):
     _record_terminal_map(session_id)
     total, cost = _update_usage(session_id)
 
-    # 与 CC statusline 同风格同序（单行版）：[项目](分支) | Total | Cost | Model/权限模式
-    # 官方快照无 5h/7d 限额字段、wire 无限额记录、脚本不联网 → Limit 无法显示。
+    # 与 CC statusline 同风格同序（单行版）：[项目](分支) | Total | Cost | Limit 5h/7d | Model/权限模式
+    # Limit 走云端 /usages 的后台缓存（stdin 快照与 wire 都没有限额数据）。
     segments = []
     cwd = payload.get("cwd")
     branch = payload.get("gitBranch")
@@ -307,6 +449,8 @@ def _render(payload):
     if total:
         segments.append(f"{C['total']}Total: {fmt_tokens(total)}{RST}")
         segments.append(f"{C['total']}Cost: ${cost:.2f}{RST}")
+    _maybe_refresh_quota()
+    segments.extend(_render_quota())
     model = payload.get("model")
     if isinstance(model, str) and model:
         perm = payload.get("permissionMode")
@@ -317,6 +461,9 @@ def _render(payload):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--refresh-quota":
+        _fetch_quota()  # detached 后台刷新模式：只拉配额写缓存，不输出
+        return
     try:
         payload = json.load(sys.stdin)
     except Exception:

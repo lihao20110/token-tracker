@@ -4,6 +4,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import tomllib
 
 import pytest
@@ -1286,6 +1287,87 @@ def test_kimi_statusline_script_fail_open(tmp_path):
         assert r.returncode == 0
         assert "Traceback" not in r.stdout
         assert len(r.stdout.splitlines()) <= 1
+
+
+def _quota_server():
+    """本地假 /usages 服务：5h=limits[300min].detail（18%），7d=usage（15%）。"""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    body = json.dumps({
+        "usage": {"limit": "100", "used": "15", "remaining": "85",
+                  "resetTime": "2026-08-07T10:26:10Z"},
+        "limits": [{"window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+                    "detail": {"limit": "100", "used": "18", "remaining": "82",
+                               "resetTime": "2026-07-31T19:26:10Z"}}],
+    }).encode()
+
+    class _H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def test_kimi_statusline_quota_refresh_and_render(tmp_path):
+    # Limit 段：--refresh-quota 拉 /usages 写缓存；渲染只读缓存（零网络）；
+    # 缓存超 15 分钟失效不显示；detached 后台刷新端到端写回缓存。
+    script = tmp_path / "kimi-statusline.py"
+    script.write_text(hooks._render_kimi_statusline_hook(), encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir()
+    kimi_dir = tmp_path / "kimi-home"
+    (kimi_dir / "credentials").mkdir(parents=True)
+    (kimi_dir / "credentials" / "kimi-code.json").write_text(json.dumps(
+        {"access_token": "tok", "expires_at": int(time.time()) + 3600}), encoding="utf-8")
+    srv = _quota_server()
+    try:
+        url = f"http://127.0.0.1:{srv.server_address[1]}/usages"
+        env = {"TT_KIMI_QUOTA_URL": url}
+        payload = {"model": "K3", "sessionId": "session_q1"}
+        cache_file = home / ".config" / "token-tracker" / "tt-kimi-quota.json"
+
+        # 显式刷新：--refresh-quota 只写缓存、不输出
+        r = subprocess.run([sys.executable, str(script), "--refresh-quota"],
+                           capture_output=True, text=True,
+                           env=dict(os.environ, HOME=str(home), KIMI_CODE_HOME=str(kimi_dir), **env))
+        assert r.returncode == 0 and not r.stdout
+        cache = json.loads(cache_file.read_text())
+        assert round(cache["five_hour"]) == 18 and round(cache["seven_day"]) == 15
+
+        # 渲染只读缓存：Limit 段出现（5h/7d + 阈值色）
+        r1 = _run_kimi_statusline(script, payload, home, kimi_dir, **env)
+        line1 = r1.stdout.splitlines()[0]
+        assert "Limit:" in line1 and "5h:" in line1 and "18%" in line1
+        assert "7d:" in line1 and "15%" in line1
+
+        # 缓存超 15 分钟 → Limit 段消失（本帧仍是旧渲染，后台刷新异步）
+        old = time.time() - 1000
+        os.utime(cache_file, (old, old))
+        r2 = _run_kimi_statusline(script, payload, home, kimi_dir, **env)
+        assert "Limit" not in r2.stdout
+
+        # detached 后台刷新端到端：删缓存 + 解锁 → 渲染派生子进程写回缓存
+        cache_file.unlink()
+        lock = str(cache_file) + ".lock"
+        if os.path.exists(lock):
+            os.remove(lock)
+        _run_kimi_statusline(script, payload, home, kimi_dir, **env)
+        for _ in range(50):
+            if cache_file.exists():
+                break
+            time.sleep(0.1)
+        assert cache_file.exists()
+    finally:
+        srv.shutdown()
 
 
 def _kimi_only_home(tmp_path, monkeypatch):
