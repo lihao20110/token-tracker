@@ -366,6 +366,9 @@ def _fallback_pricing() -> dict:
         "doubao-1-5-pro-32k": _cny(0.8, 2, 0.16),
         "doubao-1-5-pro-256k": _cny(5, 9),
         # DeepSeek（官方中国站人民币价；chat/reasoner 现映射 V4-Flash，2026-07-24 弃用旧名）
+        # 注意：官方已预告峰谷定价（高峰=北京时间 9:00-12:00 / 14:00-18:00 全计费项 ×2），
+        # 2026-07-31 核实尚未生效（"具体时间以正式通知为准"）；生效后需按 entry 时间戳分时段计价，
+        # 并同步状态栏 _session_cost 的口径
         "deepseek-v4-flash": _cny(1, 2, 0.02),
         "deepseek-v4-pro": _cny(3, 6, 0.025),
         "deepseek-chat": _cny(1, 2, 0.02),

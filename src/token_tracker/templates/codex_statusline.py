@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """token-tracker Codex 伪 statusline（Stop hook）：每次回答后追加两行彩色 status，仿 CC statusline。
-L1：[项目](分支 +A -D) | Total: <会话累计 token> | Model: <模型>
+L1：[项目](分支 +A -D) | Total: <会话累计 token> | Cost: $<第三方 provider 会话成本> | Model: <模型>
 L2：Limit: 5h <bar> <%> (reset) | 7d <bar> <%> (reset) | <window> Ctx <bar> <%>
-数据：Total = 当前会话 total_token_usage（in+out+reasoning）；5h/7d = codex.load_rate_limits()（账号级准）；
-Ctx = last_input ÷ window；Model = Stop payload.model；会话按 transcript_path 精确定位、回退最近文件。
+数据：Total = 当前会话 total_token_usage（in+out+reasoning）；5h/7d 优先取当前会话自己的
+rate_limits 快照（load_session_rate_limits），回退 codex.load_rate_limits(provider=当前会话
+model_provider)——同 CODEX_HOME 多账号/多 provider 混跑时不串配额；Ctx = last_input ÷ window；
+Model = Stop payload.model；会话按 transcript_path 精确定位、回退最近文件。
 由 `tt setup` 生成，勿手改。"""
 __version__ = "__STATUSLINE_HOOK_VERSION__"
 import json
@@ -65,25 +67,27 @@ def _total_tokens(info):
 
 
 def _parse_session(path):
-    """解析 session jsonl → (session_id, cwd, 最后一个 token_count 的 info, model, effort)。
-    model/effort 取最后一个 turn_context（跟随中途换模型/调 effort）。"""
+    """解析 session jsonl → (session_id, cwd, 最后一个 token_count 的 info, model, effort, provider)。
+    model/effort 取最后一个 turn_context（跟随中途换模型/调 effort）；
+    provider 取 session_meta.model_provider（多账号/多 provider 混跑时区分配额来源）。"""
     from token_tracker.adapters.util import iter_jsonl_dicts
     session_id = ""
     cwd = ""
     info = None
-    model = effort = ""
+    model = effort = provider = ""
     for d in iter_jsonl_dicts(path):
         p = d.get("payload", {})
         t = d.get("type")
         if t == "session_meta":
             session_id = p.get("id", "") or session_id
             cwd = p.get("cwd", "")
+            provider = p.get("model_provider", "") or provider
         elif t == "turn_context":  # 含 model（gpt-5.5）+ effort（high）
             model = p.get("model") or model
             effort = p.get("effort") or effort
         elif p.get("type") == "token_count" and p.get("info"):
             info = p["info"]
-    return session_id, cwd, info, model, effort
+    return session_id, cwd, info, model, effort, provider
 
 
 def _current_session(payload):
@@ -106,7 +110,7 @@ def _current_session(payload):
                 return (*r, False)
     except Exception:
         pass
-    return "", "", None, "", "", False
+    return "", "", None, "", "", "", False
 
 
 def _record_terminal_map(session_id):
@@ -173,6 +177,31 @@ def _ctx_pct(info):
     except Exception:
         pass
     return None
+
+
+def _session_cost(info, model):
+    """第三方 API provider（deepseek 等）没有账号配额，改按会话 token 用量估成本（cost.py 定价）。
+    解析不到定价 / 零用量返回 None（宁缺毋假 $0）。"""
+    try:
+        u = (info or {}).get("total_token_usage") or {}
+        cached = u.get("cached_input_tokens", 0)
+        total_in = u.get("input_tokens", 0)
+        total_out = u.get("output_tokens", 0) + u.get("reasoning_output_tokens", 0)
+        if not model or (total_in == 0 and total_out == 0):
+            return None
+        from token_tracker.adapters.types import UsageEntry
+        from token_tracker.analyzer.cost import calculate_cost
+        entry = UsageEntry(
+            timestamp=datetime.now(timezone.utc),
+            session_id="", message_id="", request_id="", model=model,
+            input_tokens=total_in - cached, output_tokens=total_out,
+            cache_creation_tokens=0, cache_read_tokens=cached,
+            cost_usd=None, project="", agent_id="codex",
+        )
+        cost = calculate_cost(entry)
+        return cost if cost > 0 else None
+    except Exception:
+        return None
 
 
 def _git_status(cwd):
@@ -248,14 +277,21 @@ def main():
     except Exception:
         payload = {}
 
+    session_id, cwd, info, model, effort, provider, exact_session = _current_session(payload)
+
+    # Limit：优先当前会话自己的限额快照（多账号/多 provider 混跑不串数据）；
+    # 会话还没产生 token_count 时回退到同 provider 的最近会话。
     rl = None
     try:
         from token_tracker.adapters import codex
-        rl = codex.load_rate_limits()
+        tp = payload.get("transcript_path")
+        if exact_session and tp:
+            rl = codex.load_session_rate_limits(tp)
+        if rl is None:
+            rl = codex.load_rate_limits(provider=provider or None)
     except Exception:
         pass
 
-    session_id, cwd, info, model, effort, exact_session = _current_session(payload)
     payload_session_id = payload.get("session_id") or payload.get("thread_id")
     terminal_session_id = session_id if exact_session else ""
     if isinstance(payload_session_id, str) and payload_session_id:
@@ -275,6 +311,11 @@ def main():
     if total:
         line1.append(f"{C['tokens']}Total: {fmt_tokens(total)}{RST}")  # 整体取 tokens 槽（mocha=peach/橙）
     model = model or payload.get("model") or ""  # session turn_context 的 model（gpt-5.5）优先
+    # 第三方 API provider（deepseek 等）无账号配额：L1 补会话成本（仿 CC 的 Cost 槽位）
+    cost = _session_cost(info, model) if provider and provider != "openai" else None
+    if cost is not None:
+        cost_s = f"${cost:.2f}" if cost >= 0.01 else f"${cost:.4f}"
+        line1.append(f"{C['total']}Cost: {cost_s}{RST}")
     if model:
         # effort 缺失时显示 default（Codex 默认 reasoning level），与 TUI 的 Current reasoning level 对齐
         label = f"{model} {effort or 'default'}"
@@ -282,15 +323,18 @@ def main():
 
     # L2: Limit: 5h | 7d | <window> Ctx（仿 CC statusline，带进度条 + reset）
     line2 = []
+    has_limit = False
     if rl and rl.five_hour_pct is not None:
         line2.append(_render_limit("5h", rl.five_hour_pct, rl.five_hour_resets_at, now_ts))
+        has_limit = True
     if rl and rl.seven_day_pct is not None:
         line2.append(_render_limit("7d", rl.seven_day_pct, rl.seven_day_resets_at, now_ts))
+        has_limit = True
     if ctx is not None:
         size = (info or {}).get("model_context_window") or 0
         prefix = f"{fmt_tokens(size)} " if size else ""
         line2.append(f"{C['label']}{prefix}Ctx {RST}{_bar(ctx)}")
-    if line2:
+    if line2 and has_limit:  # 第三方 provider 只有 Ctx 时不挂 Limit: 前缀
         line2[0] = f"{C['label']}Limit:{RST} " + line2[0]
 
     lines = [" | ".join(x) for x in (line1, line2) if x]

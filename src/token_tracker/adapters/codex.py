@@ -66,7 +66,13 @@ def _load_thread_models() -> dict[str, str]:
         return {}
 
 
-def load_rate_limits() -> RateLimits | None:
+def load_rate_limits(provider: str | None = None) -> RateLimits | None:
+    """最近会话的账号限额快照。
+
+    provider 给出时只采纳 session_meta.model_provider 相同的会话——同一 CODEX_HOME 下
+    多账号 / 多 model_provider（如 codex --profile deepseek）混跑时，不能把别的
+    provider 的配额（或 openai 配额）显示在当前会话上。
+    """
     sessions_path = Path(SESSIONS_DIR)
     if not sessions_path.is_dir():
         return None
@@ -78,9 +84,27 @@ def load_rate_limits() -> RateLimits | None:
     latest_snapshot: tuple[float, RateLimits] | None = None
     for path in jsonl_files[:_RATE_LIMIT_SCAN_FILES]:
         snapshot = _extract_rate_limits_snapshot(path, models)
-        if snapshot and (latest_snapshot is None or snapshot[0] > latest_snapshot[0]):
-            latest_snapshot = snapshot
+        if not snapshot:
+            continue
+        if provider is not None and snapshot[2] != provider:
+            continue
+        if latest_snapshot is None or snapshot[0] > latest_snapshot[0]:
+            latest_snapshot = snapshot[:2]
     return latest_snapshot[1] if latest_snapshot else None
+
+
+def load_session_rate_limits(path: Path | str) -> RateLimits | None:
+    """单个会话文件自己的限额快照（statusline 优先用当前会话，避免串账号）。"""
+    return _extract_rate_limits(Path(path), {})
+
+
+def session_provider(path: Path | str) -> str:
+    """会话的 model_provider（session_meta）；读不到返回 ""。"""
+    for data in iter_jsonl_dicts(Path(path)):
+        if data.get("type") == "session_meta":
+            provider = data.get("payload", {}).get("model_provider")
+            return provider if isinstance(provider, str) else ""
+    return ""
 
 
 def _safe_mtime(path: Path) -> float:
@@ -95,12 +119,16 @@ def _extract_rate_limits(path: Path, models: dict[str, str]) -> RateLimits | Non
     return snapshot[1] if snapshot else None
 
 
-def _extract_rate_limits_snapshot(path: Path, models: dict[str, str]) -> tuple[float, RateLimits] | None:
+def _extract_rate_limits_snapshot(path: Path, models: dict[str, str]) -> tuple[float, RateLimits, str] | None:
     session_id = ""
+    provider = ""
     last_payload = None
     for data in iter_jsonl_dicts(path):
         if data.get("type") == "session_meta":
-            session_id = data.get("payload", {}).get("id", "")
+            meta = data.get("payload", {})
+            session_id = meta.get("id", "")
+            p = meta.get("model_provider")
+            provider = p if isinstance(p, str) else ""
         if data.get("type") != "event_msg":
             continue
         payload = data.get("payload", {})
@@ -150,6 +178,7 @@ def _extract_rate_limits_snapshot(path: Path, models: dict[str, str]) -> tuple[f
             plan_type=rl.get("plan_type") or "",
             context_window=info.get("model_context_window"),
         ),
+        provider,
     )
 
 

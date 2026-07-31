@@ -211,3 +211,81 @@ def test_load_rate_limits_uses_newest_standard_event_across_sessions(tmp_path, m
 
     assert result is not None
     assert result.seven_day_pct == 73.0
+
+
+def _meta_event(provider: str, session_id: str = "s1") -> dict:
+    return {
+        "timestamp": "2026-06-04T19:00:00.000Z",
+        "type": "session_meta",
+        "payload": {"id": session_id, "timestamp": "2026-06-04T19:00:00.000Z",
+                    "cwd": "/tmp/proj", "model_provider": provider},
+    }
+
+
+def test_load_rate_limits_provider_filter_skips_other_accounts(tmp_path, monkeypatch):
+    # 同一 CODEX_HOME 混跑 openai 主账号 + deepseek profile：按 provider 过滤后
+    # 不得把 openai 会话的配额显示在 deepseek 会话上（反之亦然）
+    openai_rl = {
+        "primary": {"used_percent": 73.0, "window_minutes": 10080, "resets_at": 9_999_999_999},
+        "secondary": None,
+    }
+    deepseek_rl = {
+        "primary": {"used_percent": 5.0, "window_minutes": 10080, "resets_at": 9_999_999_999},
+        "secondary": None,
+    }
+    openai_path = _write_session(
+        tmp_path,
+        [_meta_event("openai"), _token_count_event(openai_rl, timestamp="2026-06-04T21:00:00.000Z")],
+        "openai.jsonl",
+    )
+    ds_path = _write_session(
+        tmp_path,
+        [_meta_event("deepseek"), _token_count_event(deepseek_rl, timestamp="2026-06-04T22:00:00.000Z")],
+        "deepseek.jsonl",
+    )
+    os.utime(openai_path, (100, 100))
+    os.utime(ds_path, (200, 200))  # deepseek 文件更新：无过滤时会错误命中它
+    monkeypatch.setattr(codex, "SESSIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(codex, "_load_thread_models", lambda: {})
+
+    assert codex.load_rate_limits().seven_day_pct == 5.0  # 不过滤：最新文件（保持旧行为）
+    assert codex.load_rate_limits(provider="openai").seven_day_pct == 73.0
+    assert codex.load_rate_limits(provider="deepseek").seven_day_pct == 5.0
+
+
+def test_load_rate_limits_provider_filter_no_match_returns_none(tmp_path, monkeypatch):
+    # 第三方 provider（deepseek）通常没有 codex 标准配额事件：过滤后应为 None，
+    # 状态栏整段 Limit 不显示，而不是错拿 openai 账号的配额
+    openai_rl = {
+        "primary": {"used_percent": 73.0, "window_minutes": 10080, "resets_at": 9_999_999_999},
+        "secondary": None,
+    }
+    _write_session(
+        tmp_path,
+        [_meta_event("openai"), _token_count_event(openai_rl)],
+    )
+    monkeypatch.setattr(codex, "SESSIONS_DIR", str(tmp_path))
+    monkeypatch.setattr(codex, "_load_thread_models", lambda: {})
+
+    assert codex.load_rate_limits(provider="deepseek") is None
+
+
+def test_load_session_rate_limits_reads_single_transcript(tmp_path):
+    rl = {
+        "primary": {"used_percent": 12.0, "window_minutes": 300, "resets_at": 9_999_999_999},
+        "secondary": {"used_percent": 60.0, "window_minutes": 10080, "resets_at": 9_999_999_999},
+    }
+    path = _write_session(tmp_path, [_meta_event("openai"), _token_count_event(rl)])
+
+    result = codex.load_session_rate_limits(path)
+
+    assert result is not None
+    assert result.five_hour_pct == 12.0
+    assert result.seven_day_pct == 60.0
+
+
+def test_session_provider_reads_session_meta(tmp_path):
+    path = _write_session(tmp_path, [_meta_event("deepseek")])
+    assert codex.session_provider(path) == "deepseek"
+    empty = _write_session(tmp_path, [], "empty.jsonl")
+    assert codex.session_provider(empty) == ""
