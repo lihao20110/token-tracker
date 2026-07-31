@@ -49,9 +49,10 @@ def test_extract_theme_arg():
 
 
 def test_extract_agent_arg_maps_flags_to_ids():
-    # --claude / --codex 从任意位置提取并移除；映射到 adapter id；未给 → None
+    # --claude / --codex / --kimi 从任意位置提取并移除；映射到 adapter id；未给 → None
     assert cli._extract_agent_arg(["daily", "--claude"]) == (["daily"], "claude-code")
     assert cli._extract_agent_arg(["--codex", "weekly"]) == (["weekly"], "codex")
+    assert cli._extract_agent_arg(["--kimi", "daily"]) == (["daily"], "kimi")
     assert cli._extract_agent_arg(["monthly"]) == (["monthly"], None)
     # 重复相同 flag 幂等；不同 flag 混用退出（下一用例覆盖）
     assert cli._extract_agent_arg(["--claude", "--claude", "status"]) == (["status"], "claude-code")
@@ -62,6 +63,9 @@ def test_extract_agent_arg_conflict_exits(monkeypatch, capsys):
     with pytest.raises(SystemExit) as e:
         cli._extract_agent_arg(["--claude", "--codex", "daily"])
     assert e.value.code == 1
+    with pytest.raises(SystemExit) as e2:
+        cli._extract_agent_arg(["--kimi", "--codex", "daily"])
+    assert e2.value.code == 1
 
 
 def test_cli_agent_flag_filters_agents(monkeypatch):
@@ -130,6 +134,7 @@ def test_current_session_agent_ignores_claude_config_dir(monkeypatch):
     # 不能当会话信号——否则独立终端被误判会话内（daily/weekly 被过滤、wizard 永不出现）。
     for var in ("CODEX_THREAD_ID", "CODEX_SANDBOX", "CLAUDECODE", "CLAUDE_CONFIG_DIR"):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(cli.kimi, "current_session_id_for_cwd", lambda **kw: "")
     assert cli._current_session_agent() is None
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/custom/claude")  # 仅配置变量 → 仍是独立终端
     assert cli._current_session_agent() is None
@@ -137,3 +142,18 @@ def test_current_session_agent_ignores_claude_config_dir(monkeypatch):
     assert cli._current_session_agent() == "claude-code"
     monkeypatch.setenv("CODEX_THREAD_ID", "t1")                # Codex 信号优先级在前
     assert cli._current_session_agent() == "codex"
+
+
+def test_current_session_agent_detects_kimi_via_fresh_cwd_session(monkeypatch):
+    # Kimi 无会话环境变量：回退「workDir==cwd 且 updatedAt 新鲜」目录探测，且要带新鲜度参数
+    for var in ("CODEX_THREAD_ID", "CODEX_SANDBOX", "CLAUDECODE"):
+        monkeypatch.delenv(var, raising=False)
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        cli.kimi, "current_session_id_for_cwd",
+        lambda **kw: calls.append(kw) or "session_x",
+    )
+    assert cli._current_session_agent() == "kimi"
+    assert calls and calls[0].get("fresh_within_s")  # 必须限新鲜度，防常驻误判
+    monkeypatch.setattr(cli.kimi, "current_session_id_for_cwd", lambda **kw: "")
+    assert cli._current_session_agent() is None

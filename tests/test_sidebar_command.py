@@ -36,7 +36,8 @@ def test_current_session_id_falls_back_to_kimi_cwd_session(tmp_path, monkeypatch
     _state("session_old", "2026-07-24T10:00:00.000Z")
     _state("session_new", "2026-07-24T11:00:00.000Z")
     _state("session_other_proj", "2026-07-24T12:00:00.000Z", work_dir=str(tmp_path / "elsewhere"))
-    monkeypatch.setenv("KIMI_CODE_HOME", str(kimi_home_dir))
+    from token_tracker.adapters import kimi
+    monkeypatch.setattr(kimi, "SESSIONS_DIR", str(kimi_home_dir / "sessions"))
     monkeypatch.chdir(proj)
 
     assert sidebar_command._current_session_id() == "session_new"

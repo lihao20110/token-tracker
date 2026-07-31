@@ -12,7 +12,6 @@ import os
 import shlex
 import subprocess
 import sys
-from pathlib import Path
 
 _SPLIT_OK = "tt_sidebar_split_ok"
 _PROCESS_TIMEOUT = 25
@@ -28,28 +27,11 @@ def _current_session_id() -> str:
 
 
 def _kimi_session_id_for_cwd() -> str:
-    """Kimi 会话内没有 session id 环境变量（实测），回退：取 workDir 等于当前目录、
-    state.json updatedAt 最新的那个 Kimi 会话。用户刚提交提示词触发 Skill，该会话必是最新。"""
-    from datetime import datetime
+    """委托 adapters.kimi 的共享实现（workDir==cwd 且 updatedAt 最新；不限新鲜度——
+    用户刚提交提示词触发 Skill，该会话必是最新）。"""
+    from .adapters.kimi import current_session_id_for_cwd
 
-    from .adapters.util import kimi_home
-
-    cwd = os.getcwd()
-    best_id, best_ts = "", None
-    for state_path in (Path(kimi_home()) / "sessions").glob("*/session_*/state.json"):
-        try:
-            data = json.loads(state_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(data, dict) or data.get("workDir") != cwd:
-            continue
-        try:
-            ts = datetime.fromisoformat(str(data.get("updatedAt", "")).replace("Z", "+00:00"))
-        except ValueError:
-            continue
-        if best_ts is None or ts > best_ts:
-            best_id, best_ts = state_path.parent.name, ts
-    return best_id
+    return current_session_id_for_cwd()
 
 
 def _module_argv(action: str, *args: str) -> list[str]:

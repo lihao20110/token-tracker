@@ -361,8 +361,8 @@ def test_mimo_cny_pricing(monkeypatch):
 def test_chinese_model_family_fallback(monkeypatch):
     # 未知新版本 / 已下线旧 id 按系列兜底，不归零
     monkeypatch.setattr(cost, "_pricing", cost._fallback_pricing())
-    # 未来 kimi-k3 → kimi-k2.6（¥6.5 input ÷7.1）
-    assert cost.calculate_cost(make_entry(model="kimi-k3-preview", input_tokens=1_000_000)) == pytest.approx(6.5 / 7.1)
+    # 未来 kimi-k4 → kimi-k2.6（¥6.5 input ÷7.1）
+    assert cost.calculate_cost(make_entry(model="kimi-k4-preview", input_tokens=1_000_000)) == pytest.approx(6.5 / 7.1)
     # 已 EOL 的 kimi-k2-instruct → kimi 系列兜底，不归零
     assert cost.calculate_cost(make_entry(model="kimi-k2-instruct", input_tokens=1_000_000)) == pytest.approx(6.5 / 7.1)
     # 未来 glm-4.8 → glm-4.6（$0.6 input，不折汇率）
@@ -371,11 +371,23 @@ def test_chinese_model_family_fallback(monkeypatch):
     assert cost.calculate_cost(make_entry(model="minimax-m4", input_tokens=1_000_000)) == pytest.approx(0.3)
 
 
+def test_kimi_k3_priced_by_official_usd_rate(monkeypatch):
+    # kimi-k3 是全新旗舰（2026-07-16 上线）：官方国际站 $3/$15，与 k2.6 档（≈$0.92/$3.8）价差 3 倍+，
+    # 必须有专属内置价，不能走 kimi 家族兜底；Kimi Code wire 的 alias id "kimi-code/k3" 路由到同一档
+    monkeypatch.setattr(cost, "_pricing", cost._fallback_pricing())
+    entry = make_entry(model="kimi-k3", input_tokens=1_000_000, output_tokens=1_000_000,
+                       cache_read_tokens=1_000_000)
+    assert cost.calculate_cost(entry) == pytest.approx(3.0 + 15.0 + 0.3)
+    alias = make_entry(model="kimi-code/k3", input_tokens=1_000_000, output_tokens=1_000_000,
+                       cache_read_tokens=1_000_000)
+    assert cost.calculate_cost(alias) == pytest.approx(3.0 + 15.0 + 0.3)
+
+
 def test_chinese_models_have_short_names():
     # cost.py 内置的国产 key 都应在 MODEL_SHORT 有短名（报表 / 状态栏可读）
     from token_tracker.ui.format import MODEL_SHORT
     for k in (
-        "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5",
+        "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5",
         "moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k",
         "glm-4.6", "glm-4.5", "glm-4.5-air", "glm-4.7", "glm-5",
         "qwen3-coder-plus", "qwen-max", "qwen-plus",

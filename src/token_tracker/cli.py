@@ -6,11 +6,10 @@ from datetime import datetime
 from rich.text import Text
 
 from . import config, i18n
-from .adapters import claude, codex
+from .adapters import claude, codex, kimi
 from .adapters.rate_limits import load_rate_limits as load_claude_rate_limits
 from .adapters.registry import detect_agents
 from .adapters.types import StatusSummary
-from .adapters.util import kimi_home
 from .analyzer.aggregator import (
     add_token_fields,
     aggregate_daily,
@@ -33,8 +32,11 @@ from .ui.tables import (
     render_weekly,
 )
 
-AGENT_LOADERS = {"claude-code": claude, "codex": codex}
+AGENT_LOADERS = {"claude-code": claude, "codex": codex, "kimi": kimi}
 RATE_LIMIT_LOADERS = {"claude-code": load_claude_rate_limits, "codex": codex.load_rate_limits}
+
+# agent 过滤 flag → agent_id（issue #19；_extract_agent_arg 解析、_select_agents 反查共用）
+_FLAG_TO_ID = {"--claude": "claude-code", "--codex": "codex", "--kimi": "kimi"}
 
 # 排序字段 → stats 属性名（单一权威表）。
 # "time" 的属性因命令而异（daily=date / weekly=week / sessions=start_time），不在此表，走 default_attr。
@@ -74,11 +76,10 @@ def _parse_limit(args: list[str], default: int) -> int:
 
 
 def _extract_agent_arg(args: list[str]) -> tuple[list[str], str | None]:
-    """提取 `--claude` / `--codex`，返回 (剩余 args, agent_id | None)。互斥（同时给报错退出）；
+    """提取 `--claude` / `--codex` / `--kimi`，返回 (剩余 args, agent_id | None)。互斥（同时给报错退出）；
     未给返回 None（走默认合并 + 会话自动识别）。用于多 agent 环境按需只看一个 agent（issue #19）。"""
     remaining: list[str] = []
     agent_id: str | None = None
-    _FLAG_TO_ID = {"--claude": "claude-code", "--codex": "codex"}
     for a in args:
         target = _FLAG_TO_ID.get(a)
         if target is None:
@@ -227,11 +228,8 @@ def _cmd_sidebar(agents, args: list[str]) -> None:
     （备用屏 + 滚动 + 5s 定时刷新，q / Ctrl+C 退出）；`--once` 或非 tty 打一帧
     Rich 快照即退（脚本 / `!tt sidebar` / 测试用）。只读 transcript 与心跳文件，
     不写任何产物；不跟随会话收窄 agent——侧边栏本职是「总览所有会话」，
-    显式 --claude / --codex 才过滤。"""
+    显式 --claude / --codex / --kimi 才过滤。"""
     agent_ids = {a.id for a in agents}
-    # kimi 暂无 usage adapter（不进 registry），sidebar 按数据目录存在与否单独纳入
-    if os.path.isdir(os.path.join(kimi_home(), "sessions")):
-        agent_ids.add("kimi")
     if "--once" in args or not sys.stdout.isatty():
         sessions = scan_sessions(agent_ids=agent_ids)
         with forced_color_console():
@@ -242,13 +240,17 @@ def _cmd_sidebar(agents, args: list[str]) -> None:
 
 
 def _current_session_agent() -> str | None:
-    """识别当前所在的 agent 会话（靠**会话内才有**的环境变量）：Codex / Claude Code；独立终端返回 None。
+    """识别当前所在的 agent 会话：Codex / Claude Code 靠**会话内才有**的环境变量；Kimi 无环境变量，
+    回退「state.json workDir == cwd 且 updatedAt 30 分钟内」的目录探测（新鲜度门控避免把
+    「项目目录里曾有过 kimi 会话」的独立终端误判成会话内）；独立终端返回 None。
     不能用 CLAUDE_CONFIG_DIR 判断——那是用户级配置变量（可长期 export 在 shell profile 里挪配置目录，
     tt 自己也支持它），拿它当会话信号会让独立终端被误判成会话内（报表被过滤、首次运行进不了 wizard）。"""
     if os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_SANDBOX"):
         return "codex"
     if os.environ.get("CLAUDECODE"):
         return "claude-code"
+    if kimi.current_session_id_for_cwd(fresh_within_s=30 * 60):
+        return "kimi"
     return None
 
 
@@ -458,7 +460,7 @@ def _select_agents(filter_agent: str | None):
     matched = [agent for agent in agents if agent.id == filter_agent]
     if matched:
         return matched
-    flag = "--claude" if filter_agent == "claude-code" else "--codex"
+    flag = next((f for f, agent_id in _FLAG_TO_ID.items() if agent_id == filter_agent), filter_agent)
     get_console().print(f"[red]{t('agent_not_detected', flag=flag)}[/red]")
     sys.exit(1)
 

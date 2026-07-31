@@ -2,8 +2,9 @@
 
 import json
 import os
+import re
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -89,3 +90,30 @@ def project_from_cwd(cwd: str) -> str:
     rel = cwd[len(home):].strip(os.sep) if cwd.startswith(home) else cwd.strip(os.sep)
     parts = rel.split(os.sep)
     return parts[-1] if parts and parts[-1] else rel or "unknown"
+
+
+def parse_epoch_ms(raw: object) -> datetime | None:
+    """Kimi wire 事件时间是 epoch 毫秒（int）。"""
+    if not isinstance(raw, (int, float)):
+        return None
+    try:
+        return datetime.fromtimestamp(raw / 1000, UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def kimi_project_from_session_dir(session_dir: Path) -> str:
+    """Kimi 会话目录的 state.json → workDir → 项目名；读不到回退 wd_<name>_<hash> 目录名。
+
+    布局：`<kimi_home>/sessions/<wd_*>/<session_*>/`，state.json 在会话目录下。
+    """
+    try:
+        with open(session_dir / "state.json", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    work_dir = data.get("workDir") if isinstance(data, dict) else None
+    if isinstance(work_dir, str) and work_dir:
+        return project_from_cwd(work_dir)
+    match = re.fullmatch(r"wd_(.+)_[0-9a-f]{6,}", session_dir.parent.name)
+    return match.group(1) if match else "unknown"

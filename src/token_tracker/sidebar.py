@@ -29,7 +29,14 @@ from pathlib import Path
 from . import config
 from .adapters import claude as claude_adapter
 from .adapters import codex as codex_adapter
-from .adapters.util import claude_home, iter_jsonl_dicts, kimi_home, project_from_cwd
+from .adapters.util import (
+    claude_home,
+    iter_jsonl_dicts,
+    kimi_home,
+    kimi_project_from_session_dir,
+    parse_epoch_ms,
+    project_from_cwd,
+)
 
 # 会话状态（启发式，见 _infer_state；ATTENTION 无法区分「等授权」和「长工具在跑」，v2 接 hooks 后才能）
 RUNNING = "running"      # 正在生成 / 写盘
@@ -658,9 +665,9 @@ def _scan_kimi_sessions(cutoff: datetime, now: datetime,
 def _parse_kimi(path: Path, max_prompts: int | None) -> _Parsed | None:
     # 布局：…/sessions/<wd_*>/<session_*>/agents/main/wire.jsonl；state.json 在会话目录下
     session_dir = path.parents[2]
-    state = _KimiParseState(session_id=session_dir.name, project=_kimi_project(session_dir))
+    state = _KimiParseState(session_id=session_dir.name, project=kimi_project_from_session_dir(session_dir))
     for data in iter_jsonl_dicts(path):
-        ts = _parse_epoch_ms(data.get("time"))
+        ts = parse_epoch_ms(data.get("time"))
         if ts and (state.last_event is None or ts > state.last_event):
             state.last_event = ts
         dtype = data.get("type")
@@ -680,20 +687,6 @@ def _parse_kimi(path: Path, max_prompts: int | None) -> _Parsed | None:
     return _Parsed(state.session_id, state.project, prompts, bool(state.pending_calls), state.model,
                    next_hint=state.pending_question or _hint_text(state.last_reply),
                    last_event=state.last_event)
-
-
-def _kimi_project(session_dir: Path) -> str:
-    """会话目录的 state.json → workDir → 项目名；读不到回退 wd_<name>_<hash> 目录名。"""
-    try:
-        with open(session_dir / "state.json", encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        data = {}
-    work_dir = data.get("workDir") if isinstance(data, dict) else None
-    if isinstance(work_dir, str) and work_dir:
-        return project_from_cwd(work_dir)
-    match = re.fullmatch(r"wd_(.+)_[0-9a-f]{6,}", session_dir.parent.name)
-    return match.group(1) if match else "unknown"
 
 
 def _consume_kimi_prompt(data: dict, ts: datetime | None, state: _KimiParseState) -> None:
@@ -729,16 +722,6 @@ def _consume_kimi_loop_event(event: dict, state: _KimiParseState) -> None:
         call_id = event.get("toolCallId")
         if isinstance(call_id, str):
             state.pending_calls.discard(call_id)
-
-
-def _parse_epoch_ms(raw: object) -> datetime | None:
-    """Kimi wire 事件时间是 epoch 毫秒（int）。"""
-    if not isinstance(raw, (int, float)):
-        return None
-    try:
-        return datetime.fromtimestamp(raw / 1000, UTC)
-    except (OverflowError, OSError, ValueError):
-        return None
 
 
 _HINT_MAX_LINES = 5   # 「下一步」显示上限（AskUserQuestion 格式化路径用；打分路径上限 3）

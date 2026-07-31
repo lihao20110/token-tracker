@@ -28,6 +28,7 @@ MODEL_SHORT = {
     "kimi-code/kimi-for-coding": "Kimi K2.7",
     "kimi-code/kimi-for-coding-highspeed": "Kimi K2.7 HS",
     # 国产模型短名（与 cost.py 内置定价 key 一一对应）
+    "kimi-k3": "Kimi K3",
     "kimi-k2.7-code": "Kimi K2.7",
     "kimi-k2.6": "Kimi K2.6",
     "kimi-k2.5": "Kimi K2.5",

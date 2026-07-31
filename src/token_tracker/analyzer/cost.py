@@ -32,6 +32,8 @@ _FAMILY_FALLBACK = (
     ("gpt-5.6", "gpt-5.6-sol"),
     ("codex-", "gpt-5.6-sol"),
     # 国产模型系列兜底：出新版本（如 GLM-4.8、Kimi K3）litellm 未收录时退回该系列最新已知价
+    # Kimi Code 会话 wire 的模型 id 带 alias 前缀（kimi-code/k3），路由到官方 API 档（与 k2.6 价差 3 倍+）
+    ("kimi-code/k3", "kimi-k3"),
     ("kimi", "kimi-k2.6"),
     ("moonshot-v", "moonshot-v1-128k"),
     ("glm-4", "glm-4.6"),
@@ -339,6 +341,9 @@ def _fallback_pricing() -> dict:
         # ---- 国产模型（2026-06 官方核实）。除 GLM 用 z.ai 国际站 USD 外，其余按各家中国站
         # 人民币价 ÷7.1 折算；阶梯定价模型（Qwen3-Coder / Doubao）统一取 0-32K 基础档。----
         # Kimi / Moonshot（platform.kimi.com 官方人民币价；老 kimi-k2-instruct 已 EOL，靠系列兜底）
+        # kimi-k3 用官方国际站 USD 价（2026-07-16 上线，$3/$15，cached input $0.30，1M 上下文不分档）；
+        # Kimi Code 会话 wire 里的 "kimi-code/k3" id 由 _FAMILY_FALLBACK 路由到此 key
+        "kimi-k3": _usd(3, 15, 0.3),
         "kimi-k2.7-code": _cny(6.5, 27, 1.3),
         "kimi-k2.6": _cny(6.5, 27, 1.1),
         "kimi-k2.5": _cny(4, 21, 0.7),
