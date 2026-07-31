@@ -39,3 +39,12 @@ jobs:
 
       - name: Run tests
         run: python -m pytest -q
+
+      # 反向环境兜底：本地开发多为 zh locale + 彩色终端，单跑默认环境会漏
+      # 中文文案断言 / TERM=dumb 折行两类环境依赖（历史踩坑）
+      - name: Run tests (zh locale, dumb terminal)
+        run: python -m pytest -q
+        env:
+          LANG: zh_CN.UTF-8
+          LC_ALL: zh_CN.UTF-8
+          TERM: dumb

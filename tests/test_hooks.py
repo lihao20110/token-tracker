@@ -24,6 +24,8 @@ def _isolate_real_home(tmp_path, monkeypatch):
     tt = tmp_path / "_tt"
     home = tmp_path / "_home"
     monkeypatch.setattr(hooks, "_TT", str(tt))
+    monkeypatch.setattr(hooks, "_CLAUDE", str(home / ".claude"))
+    monkeypatch.setattr(hooks, "_CODEX", str(home / ".codex"))
     monkeypatch.setattr(hooks, "CLAUDE_SETTINGS", str(home / ".claude" / "settings.json"))
     monkeypatch.setattr(hooks, "HOOK_SCRIPT_PATH", str(tt / "claude-statusline.py"))
     monkeypatch.setattr(hooks, "CODEX_DIR", str(home / ".codex"))
@@ -54,6 +56,24 @@ def _isolate_real_home(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "TERMINAL_MAP_FILE", str(cfg / "tt-terminal-map.json"))
     monkeypatch.setattr(config, "_LEGACY_THEME_PATH", str(cfg / "theme.json"))
     monkeypatch.setattr(config, "_LEGACY_LANG_PATH", str(cfg / "lang.json"))
+
+
+def test_all_path_constants_are_isolated():
+    """新增模块级路径常量必须同步加进 autouse 隔离 fixture（本测试是兜底）：
+    遍历 hooks / config / sidebar_install 的大写路径常量，凡仍指向真实 home 的即漏 patch。
+    教训：KIMI_STATUSLINE_QUOTA_PATH 新增时漏 patch，CI 干净 HOME 上写真实路径失败。"""
+    real_home = os.path.expanduser("~")
+    offenders: list[str] = []
+    for module in (hooks, config, sidebar_install):
+        for name in dir(module):
+            if not name.isupper():
+                continue
+            value = getattr(module, name)
+            values = value if isinstance(value, (list, tuple)) else (value,)
+            for item in values:
+                if isinstance(item, str) and item.startswith(real_home):
+                    offenders.append(f"{module.__name__}.{name}={item}")
+    assert not offenders, "路径常量未纳入 autouse 隔离 fixture：" + "；".join(offenders)
 
 
 def _git(repo, *args):

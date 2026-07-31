@@ -277,17 +277,20 @@ _START_TOLERANCE_S = 10  # 注册的 startedAt 与进程真实启动时刻的允
 def _alive_pids(want: dict[int, float | None]) -> set[int]:
     """want: pid → 注册表记录的进程启动时间（epoch 秒，可 None）。返回确认存活的 pid。
 
-    一次 `ps -o pid=,lstart=` 批量查询；lstart 按本进程 TZ 解析回 epoch（ps 子进程
-    继承同一 TZ，mktime 同源可逆），与 startedAt 差超 _START_TOLERANCE_S 视为 pid
-    已被复用（判死）。lstart 解析不了（非英文 locale 等）只探活不比时间——失败方向
+    一次 `ps -o pid=,lstart=` 批量查询（强制 C locale 保英文日期格式）；lstart 按本进程 TZ
+    解析回 epoch（ps 子进程继承同一 TZ，mktime 同源可逆），与 startedAt 差超 _START_TOLERANCE_S
+    视为 pid 已被复用（判死）。lstart 解析不了只探活不比时间——失败方向
     是「多显示一个已关会话」，绝不误杀活会话。ps 不可用退化为 `os.kill(pid, 0)`。
     """
     if not want:
         return set()
     try:
+        # 强制 C locale：lstart 输出格式随用户 locale 变化（如中文系统日期英文不在），
+        # _parse_lstart 只认英文格式——不强制则非英文 locale 下启动时间比对静默失效
         out = subprocess.run(
             ["ps", "-o", "pid=,lstart=", "-p", ",".join(str(p) for p in want)],
             capture_output=True, text=True, timeout=5,
+            env={**os.environ, "LC_ALL": "C"},
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return {pid for pid in want if _pid_exists(pid)}
