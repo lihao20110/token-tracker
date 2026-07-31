@@ -1,6 +1,6 @@
 # Token Tracker (tt)
 
-本地 AI Agent Token 消耗追踪/分析工具，支持 **Claude Code** 和 **Codex** 。
+本地 AI Agent Token 消耗追踪/分析工具，支持 **Claude Code**、**Codex** 和 **Kimi Code**。
 
 自定义 StatusLine 状态栏 + CLI Dashboard，实时查看 token 用量、等效成本、限额状态。
 
@@ -12,21 +12,21 @@
 
 ## 功能亮点
 
-- **多 Agent 统一追踪** — Claude Code + Codex 统一读取，多 Agent 按来源分组
-- **状态栏集成** — Claude Code 用官方 StatusLine 接口；**Codex 业界首创伪 statusline 方案**（hook 注入两行真彩色状态栏，把官方未开放的能力在 Codex 里做了出来）
+- **多 Agent 统一追踪** — Claude Code + Codex + Kimi Code 统一读取，多 Agent 按来源分组
+- **状态栏集成** — Claude Code 用官方 StatusLine 接口；**Codex 业界首创伪 statusline 方案**（hook 注入两行真彩色状态栏，把官方未开放的能力在 Codex 里做了出来）；Kimi Code 用官方 `status_line` 接口
 - **实时侧边栏** — `tt sidebar` 窄窗格常驻面板：全部活跃会话一屏总览（状态灯 + 最近提示词 + 「下一步」建议），点击会话直达对应 iTerm2 / tmux 窗格
 - **当前会话自动分屏** — Codex 中显式执行 `$tt-sidebar`，在原会话右侧自动打开 1/3 宽度的独立提示词侧边栏
 - **限额监控** — 实时 5h / 7d 配额百分比 + 重置倒计时
 - **多维成本分析** — 会话 / 日 / 周 / 月多维报表，等效成本统计
 - **定价识别** — litellm 在线定价 + 内置官方价双层兜底，覆盖 Claude / OpenAI / Gemini / Grok 及国产主流（Kimi / GLM / Qwen / 豆包 / DeepSeek / MiniMax / MiMo）；新模型自动套用同系列定价、不静默归零
 - **会话洞察** — 项目、模型、时长、消息数一览
-- **多主题统一配色** — 6 套主题（Catppuccin 全家 + Nord + Dracula），CLI 报表 / CC 状态栏 / Codex 伪 statusline **三者同源**，`tt theme` 一键切换
+- **多主题统一配色** — 6 套主题（Catppuccin 全家 + Nord + Dracula），CLI 报表与各 Agent 状态栏**同源**，`tt theme` 一键切换
 - **零配置** — 自动检测已安装的 Agent，直接读取本地数据
 - **隐私安全** — 数据纯本地存储，不采集、不上传
 
 ## StatusLine 状态栏
 
-`tt setup` 自动为 Claude Code 和 Codex 配置状态栏，脚本更新时自动升级。
+`tt setup` 自动为 Claude Code、Codex 和 Kimi Code 配置状态栏，脚本更新时自动升级。
 
 ### Claude Code（官方接口）
 
@@ -70,6 +70,15 @@ Codex 官方暂不支持自定义 StatusLine。Token Tracker 通过 hook 注入�
 - **L2** `Limit: 5h <进度条> % (reset <倒计时>) | 7d <进度条> % (reset <倒计时>) | <窗口> Ctx <进度条> %`
 
 渲染 24-bit 真彩色、**不进模型上下文**（实测），**配色跟随当前主题**（与 CLI 报表 / CC 状态栏同源，`tt theme` 切换三者一起变）。`tt unsetup` 一并移除。
+
+### Kimi Code（官方接口）
+
+基于 Kimi Code 官方 `status_line` 接口（`tui.toml`），单行真彩色状态栏：
+
+`[项目](分支) │ Model: K3 │ Ctx ███ 31% │ ⬆21.2M $9.08`
+
+- 项目 / 分支 / 模型 / 上下文占比来自 Kimi 官方快照；token 与成本由状态栏脚本按会话 `wire.jsonl` **增量**累计（offset 缓存，每秒级调用只读新增部分），成本按内置 Kimi 官方定价估算
+- 已有自定义 `status_line.command` 时默认不覆盖（向导里选 No 也完全不碰）；`tt unsetup` 精确还原
 
 ## 报表速览
 
@@ -164,13 +173,13 @@ tt unsetup        # 卸载并恢复安装前的配置
 tt --version      # 查看版本（-v / -V 同义）
 ```
 
-> 多 agent 环境下想只看某一个 agent 的报表，加 `--claude` 或 `--codex` 即可（互斥），对 `status` / `daily` / `weekly` / `monthly` / `sessions` 均生效。例如 `tt daily --codex` 只显示 Codex 的热力图。会话内的 `daily` / `weekly` 默认已自动跟随当前会话的 agent，显式 flag 会覆盖该行为。
+> 多 agent 环境下想只看某一个 agent 的报表，加 `--claude` / `--codex` / `--kimi` 即可（互斥），对 `status` / `daily` / `weekly` / `monthly` / `sessions` 均生效。例如 `tt daily --kimi` 只显示 Kimi Code 的热力图。会话内的 `daily` / `weekly` 默认已自动跟随当前会话的 agent，显式 flag 会覆盖该行为。
 
 > 💡 `tt daily` 是 GitHub 风格的 token 贡献热力图（深浅绿方格）。在 Claude Code 会话里输入 `!tt daily` 即可看到彩色热力图 —— 用户主动用 `!` 执行的命令，Claude Code 会渲染其 24-bit 真彩色输出。
 
 ## 配色主题
 
-内置 6 套主题，CLI 报表、CC 状态栏与 Codex 伪 statusline **统一同源**（切主题三者一起变）：
+内置 6 套主题，CLI 报表与各 Agent 状态栏（CC / Codex / Kimi Code）**统一同源**（切主题一起变）：
 
 ![支持的主题](assets/screenshot-themes.png)
 
@@ -201,6 +210,7 @@ tt monthly --theme nord  # 任意报表临时换主题渲染（不持久化、�
 2. **选配色主题** — 6 套主题上下键选择，每个选项右侧内联色板预览
 3. **接管 Claude Code 状态栏** — Yes/No（仅检测到 Claude Code 时；已有自定义 statusLine 会先备份、选 No 完全不碰）
 4. **启用 Codex 伪 statusline** — Yes/No（仅检测到 Codex 时）
+5. **启用 Kimi Code 状态栏** — Yes/No（仅检测到 Kimi Code 时；已有自定义 `status_line.command` 默认不覆盖）
 
 CI / 非 tty 环境（Docker / 脚本 / `curl|bash`）自动按**推荐默认**配置：语言跟随系统设置、主题 mocha、组件默认开启但**不替换已有自定义 statusLine**。装好后想改任何一项，再跑一次 `tt setup` 即可。
 
@@ -221,8 +231,9 @@ tt sessions --sort tokens --asc # 按 token 升序
 |-------|------|------|
 | Claude Code | `~/.claude/projects/*/` | JSONL（逐消息用量） |
 | Codex | `~/.codex/sessions/` | JSONL + SQLite |
+| Kimi Code | `~/.kimi-code/sessions/` | wire JSONL（每 turn 增量） |
 
-路径跨平台：Windows 下 `~` 解析到 `%USERPROFILE%`。设了 `CLAUDE_CONFIG_DIR` / `CODEX_HOME` 环境变量（官方支持的自定义目录）时自动跟随。
+路径跨平台：Windows 下 `~` 解析到 `%USERPROFILE%`。设了 `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `KIMI_CODE_HOME` 环境变量（官方支持的自定义目录）时自动跟随。
 
 Token Tracker 对 Agent 数据**只读**，不做任何修改。
 

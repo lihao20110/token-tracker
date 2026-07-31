@@ -1,6 +1,6 @@
 # Token Tracker
 
-Track token usage across local AI agents. Supports **Claude Code** and **Codex**.
+Track token usage across local AI agents. Supports **Claude Code**, **Codex**, and **Kimi Code**.
 
 Custom StatusLine integration + CLI Dashboard — see token usage, cost, and rate limits at a glance.
 
@@ -12,20 +12,20 @@ Custom StatusLine integration + CLI Dashboard — see token usage, cost, and rat
 
 ## Highlights
 
-- **Unified multi-agent tracking** — Claude Code + Codex in one place, grouped by source
-- **Status line integration** — Claude Code via official StatusLine API; **Codex industry-first faux statusline** (hook-injected two-line truecolor status — bringing an official-unsupported capability to Codex)
+- **Unified multi-agent tracking** — Claude Code + Codex + Kimi Code in one place, grouped by source
+- **Status line integration** — Claude Code via official StatusLine API; **Codex industry-first faux statusline** (hook-injected two-line truecolor status — bringing an official-unsupported capability to Codex); Kimi Code via the official `status_line` API
 - **Live sidebar** — `tt sidebar` shows all active sessions (Claude Code + Codex + Kimi Code); `$tt-sidebar` in Codex or `/skill:tt-sidebar` in Kimi Code opens a current-session-only pane on the right at one-third width
 - **Rate limit monitoring** — real-time 5h / 7d quota usage with reset countdown
 - **Multi-dimensional cost analysis** — per-session, daily, weekly, monthly cost breakdown
 - **Pricing resolution** — litellm live pricing + built-in official-price fallback, covering Claude / OpenAI / Gemini / Grok and major Chinese models (Kimi / GLM / Qwen / Doubao / DeepSeek / MiniMax / MiMo); new family members auto-priced, never silently $0
 - **Session insights** — project, model, duration, message count per session
-- **Unified multi-theme** — 6 themes (Catppuccin family + Nord + Dracula) shared across CLI reports, the CC status line, and the Codex faux statusline; switch with `tt theme`
+- **Unified multi-theme** — 6 themes (Catppuccin family + Nord + Dracula) shared across CLI reports and every agent's status line; switch with `tt theme`
 - **Zero config** — auto-detects installed agents, reads local data directly
 - **Privacy first** — all data stays local, no collection or upload
 
 ## StatusLine
 
-`tt setup` auto-configures status lines for Claude Code and Codex, auto-upgraded when the script updates.
+`tt setup` auto-configures status lines for Claude Code, Codex, and Kimi Code, auto-upgraded when the script updates.
 
 ### Claude Code (official API)
 
@@ -69,6 +69,15 @@ Codex doesn't yet support custom StatusLine. Token Tracker injects a **faux stat
 - **L2** `Limit: 5h <bar> % (reset <ttl>) | 7d <bar> % (reset <ttl>) | <window> Ctx <bar> %`
 
 Renders 24-bit truecolor, **does not enter the model context** (verified), and **follows the current theme** (same source as the CLI reports / CC status line; `tt theme` switches all three together). `tt unsetup` removes it.
+
+### Kimi Code (official API)
+
+Built on Kimi Code's official `status_line` API (`tui.toml`) — a single truecolor line:
+
+`[project](branch) │ Model: K3 │ Ctx ███ 31% │ ⬆21.2M $9.08`
+
+- Project / branch / model / context usage come from Kimi's official snapshot; tokens and cost are accumulated **incrementally** from the session's `wire.jsonl` by the status-line script (offset-cached, only new bytes are read per run), priced with the built-in official Kimi rates
+- An existing custom `status_line.command` is never overwritten by default (the wizard also lets you opt out); `tt unsetup` restores the exact prior state
 
 ## Live Sidebar
 
@@ -130,13 +139,13 @@ tt unsetup        # uninstall and restore previous config
 tt --version      # show version (-v / -V)
 ```
 
-> In multi-agent setups, add `--claude` or `--codex` (mutually exclusive) to filter any report to a single agent — works for `status` / `daily` / `weekly` / `monthly` / `sessions`. E.g. `tt daily --codex` renders only the Codex heatmap. Inside an agent session, `daily` / `weekly` already auto-follow the current agent; the explicit flag overrides that.
+> In multi-agent setups, add `--claude` / `--codex` / `--kimi` (mutually exclusive) to filter any report to a single agent — works for `status` / `daily` / `weekly` / `monthly` / `sessions`. E.g. `tt daily --kimi` renders only the Kimi Code heatmap. Inside an agent session, `daily` / `weekly` already auto-follow the current agent; the explicit flag overrides that.
 
 > 💡 `tt daily` is a GitHub-style token contribution heatmap (shaded green cells). In a Claude Code session, type `!tt daily` to see it in full color — commands you run yourself with `!` have their 24-bit true-color output rendered.
 
 ## Color Themes
 
-6 built-in themes, **shared** across CLI reports, the CC status line, and the Codex faux statusline (switching changes all three):
+6 built-in themes, **shared** across CLI reports and every agent's status line (CC / Codex / Kimi Code) — switching changes them all:
 
 ![Supported themes](assets/screenshot-themes.png)
 
@@ -167,6 +176,7 @@ The first time you run `tt` (or run `tt setup` in a standalone terminal), an **i
 2. **Pick a color theme** — 6 themes with an inline color swatch on each option
 3. **Take over Claude Code status line** — Yes/No (only when Claude Code is detected; an existing custom statusLine is backed up first, and picking No leaves it untouched)
 4. **Enable Codex faux statusline** — Yes/No (only when Codex is detected)
+5. **Enable Kimi Code status line** — Yes/No (only when Kimi Code is detected; an existing custom `status_line.command` is never overwritten by default)
 
 CI / non-tty environments (Docker / scripts / `curl|bash`) auto-install with **recommended defaults**: language follows the system setting, theme mocha, components on by default but **an existing custom statusLine is never replaced**. To change anything later, just run `tt setup` again.
 
@@ -187,8 +197,9 @@ Available sort fields: `tokens` / `cost` / `messages` / `time` / `input` / `outp
 |-------|------|--------|
 | Claude Code | `~/.claude/projects/*/` | JSONL (per-message usage) |
 | Codex | `~/.codex/sessions/` | JSONL + SQLite |
+| Kimi Code | `~/.kimi-code/sessions/` | wire JSONL (per-turn increments) |
 
-Cross-platform paths: on Windows `~` resolves to `%USERPROFILE%`. Honors `CLAUDE_CONFIG_DIR` / `CODEX_HOME` (the official custom-directory env vars) when set.
+Cross-platform paths: on Windows `~` resolves to `%USERPROFILE%`. Honors `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `KIMI_CODE_HOME` (the official custom-directory env vars) when set.
 
 Token Tracker is **read-only** — it never modifies any agent data.
 
