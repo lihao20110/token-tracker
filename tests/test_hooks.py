@@ -1343,17 +1343,18 @@ def test_kimi_statusline_quota_refresh_and_render(tmp_path):
         cache = json.loads(cache_file.read_text())
         assert round(cache["five_hour"]) == 18 and round(cache["seven_day"]) == 15
 
-        # 渲染只读缓存：Limit 段出现（5h/7d + 阈值色）
+        # 渲染只读缓存：5h/7d 段出现（阈值色）
         r1 = _run_kimi_statusline(script, payload, home, kimi_dir, **env)
         line1 = r1.stdout.splitlines()[0]
-        assert "Limit:" in line1 and "5h:" in line1 and "18%" in line1
+        assert "Limit" not in line1                      # 1.7 起不带 Limit: 前缀
+        assert "5h:" in line1 and "18%" in line1
         assert "7d:" in line1 and "15%" in line1
 
-        # 缓存超 15 分钟 → Limit 段消失（本帧仍是旧渲染，后台刷新异步）
+        # 缓存超 15 分钟 → 5h/7d 段消失（本帧仍是旧渲染，后台刷新异步）
         old = time.time() - 1000
         os.utime(cache_file, (old, old))
         r2 = _run_kimi_statusline(script, payload, home, kimi_dir, **env)
-        assert "Limit" not in r2.stdout
+        assert "5h:" not in r2.stdout and "7d:" not in r2.stdout
 
         # detached 后台刷新端到端：删缓存 + 解锁 → 渲染派生子进程写回缓存
         cache_file.unlink()

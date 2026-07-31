@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """token-tracker Kimi Code statusline（tui.toml [status_line].command）：渲染一行会话状态。
-[项目](分支* +A -D ?U) | Total: <会话累计 token> | Cost: $<累计成本> | Limit: 5h X% | 7d Y% | Model: <模型>/<权限模式>
+[项目](分支* +A -D ?U) | Total: <会话累计 token> | Cost: $<累计成本> | 5h X% | 7d Y% | Model: <模型>/<权限模式>
 （字段、顺序、配色与 CC statusline 同风格；Kimi 只取 stdout 首行（二进制 runStatusLineCommand 硬编码截断），故压成一行。
 5h/7d 限额走云端 GET <provider.base_url>/usages（OAuth access_token，同 CLI /usage 端点）：
 渲染只读本地配额缓存、零网络；缓存超 120s 派生 detached 子进程后台刷新，token 过期/失败就整段不显示）
@@ -363,7 +363,7 @@ def _maybe_refresh_quota():
 
 
 def _render_quota():
-    """读配额缓存渲染 ['Limit: 5h X%', '7d Y%']；缓存缺失/超 QUOTA_DISPLAY_MAX_AGE → 不显示。"""
+    """读配额缓存渲染 ['5h X%', '7d Y%']；缓存缺失/超 QUOTA_DISPLAY_MAX_AGE → 不显示。"""
     try:
         if time.time() - os.path.getmtime(QUOTA_CACHE_FILE) > QUOTA_DISPLAY_MAX_AGE:
             return []
@@ -376,8 +376,6 @@ def _render_quota():
         pct = cache.get(key) if isinstance(cache, dict) else None
         if isinstance(pct, (int, float)):
             segs.append(f"{C['label']}{label}:{RST} {_pct_color(pct)}{pct:.0f}%{RST}")
-    if segs:
-        segs[0] = f"{C['label']}Limit:{RST} " + segs[0]
     return segs
 
 
@@ -437,8 +435,8 @@ def _render(payload):
     _record_terminal_map(session_id)
     total, cost = _update_usage(session_id)
 
-    # 与 CC statusline 同风格同序（单行版）：[项目](分支) | Total | Cost | Limit 5h/7d | Model/权限模式
-    # Limit 走云端 /usages 的后台缓存（stdin 快照与 wire 都没有限额数据）。
+    # 与 CC statusline 同风格同序（单行版）：[项目](分支) | Total | Cost | 5h/7d | Model/权限模式
+    # 5h/7d 走云端 /usages 的后台缓存（stdin 快照与 wire 都没有限额数据）。
     segments = []
     cwd = payload.get("cwd")
     branch = payload.get("gitBranch")
