@@ -27,7 +27,10 @@ _FAMILY_FALLBACK = (
     ("claude-sonnet", "claude-sonnet-5"),
     ("claude-haiku", "claude-haiku-4-5-20251001"),
     ("claude-fable", "claude-fable-5"),
-    ("codex-", "gpt-5.5"),
+    # GPT-5.6 三档并列（sol/terra/luna 各自有内置价，dated/variant 靠前缀命中）；系列内
+    # 未知新档（如假想 gpt-5.6-nova）退回旗舰 sol——新档价未知时退回最贵档，宁可高估不低估
+    ("gpt-5.6", "gpt-5.6-sol"),
+    ("codex-", "gpt-5.6-sol"),
     # 国产模型系列兜底：出新版本（如 GLM-4.8、Kimi K3）litellm 未收录时退回该系列最新已知价
     ("kimi", "kimi-k2.6"),
     ("moonshot-v", "moonshot-v1-128k"),
@@ -103,9 +106,12 @@ def _resolve_model_key_uncached(model: str, pricing: dict) -> str | None:
         return model
 
     ml = model.lower()
-    # model 以 key 为前缀：处理 dated/variant 后缀（gpt-5-codex-2025-12-01 → gpt-5-codex）
-    # 取最长匹配，避免 gpt-5 误吞 gpt-5-codex-* 这种更具体的 key
-    prefix_keys = [k for k in pricing if ml.startswith(k.lower())]
+    # model 以 key + "-" 为前缀：处理 dated/variant 后缀（gpt-5-codex-2025-12-01 → gpt-5-codex）
+    # "-" 锚点避免 gpt-5 误吞 gpt-5.6-* 这类点号新版本；取最长匹配，避免 gpt-5 误吞 gpt-5-codex-*
+    prefix_keys = [
+        k for k in pricing
+        if (kl := k.lower()) != ml and ml.startswith(kl) and ml[len(kl)] == "-"
+    ]
     if prefix_keys:
         return max(prefix_keys, key=len)
     # 反向兜底：key 以 model + "-" 开头（gpt-5 命中 gpt-5-2025-08-07）
@@ -287,6 +293,24 @@ def _fallback_pricing() -> dict:
             "input_cost_per_token": 5e-6,
             "output_cost_per_token": 30e-6,
             "cache_read_input_token_cost": 0.5e-6,
+        },
+        # GPT-5.6 系列（2026-07-09 GA，litellm 收录前必须有专属内置价——gpt-5.6-* 会被
+        # gpt-5 前缀吞掉错价）。取短上下文基础档；7-30 官方调价后：Terra 降 20%、Luna 降 80%。
+        #  cached input 均为 input 的 10%；长上下文表（Sol $10/$45 等）本表不跟踪。
+        "gpt-5.6-sol": {
+            "input_cost_per_token": 5e-6,
+            "output_cost_per_token": 30e-6,
+            "cache_read_input_token_cost": 0.5e-6,
+        },
+        "gpt-5.6-terra": {
+            "input_cost_per_token": 2e-6,
+            "output_cost_per_token": 12e-6,
+            "cache_read_input_token_cost": 0.2e-6,
+        },
+        "gpt-5.6-luna": {
+            "input_cost_per_token": 0.2e-6,
+            "output_cost_per_token": 1.2e-6,
+            "cache_read_input_token_cost": 0.02e-6,
         },
         "gpt-5-codex": {
             "input_cost_per_token": 1.25e-6,

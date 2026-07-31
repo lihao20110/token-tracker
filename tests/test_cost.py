@@ -109,7 +109,10 @@ def test_base_name_resolves_to_dated_pricing(openai_pricing, monkeypatch):
 
 def test_fallback_pricing_includes_openai_models():
     pricing = cost._fallback_pricing()
-    for k in ("gpt-5", "gpt-5.5", "gpt-5-codex", "gpt-5-mini", "gpt-5-nano", "gpt-5-pro", "codex-mini-latest"):
+    for k in (
+        "gpt-5", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+        "gpt-5-codex", "gpt-5-mini", "gpt-5-nano", "gpt-5-pro", "codex-mini-latest",
+    ):
         assert k in pricing, f"fallback pricing missing {k}"
         assert pricing[k].get("input_cost_per_token", 0) > 0
 
@@ -121,8 +124,43 @@ def test_gpt55_priced_4x_gpt5(monkeypatch):
     assert cost.calculate_cost(entry) == pytest.approx(35.0)  # 5 + 30
 
 
-def test_codex_auto_review_falls_back_to_gpt55(monkeypatch):
-    # Codex stop-time auto-review 用虚拟 model name codex-auto-review，按 gpt-5.5 价兜底（不归零）
+def test_gpt56_tiers_priced_per_tier_not_swallowed_by_gpt5(monkeypatch):
+    # GPT-5.6 三档是全新定价（2026-07-09 GA，7-30 调价后）："gpt-5.6-*" 会被 "gpt-5"
+    # 前缀吞掉错价（$1.25/$10），必须有各自专属内置价
+    monkeypatch.setattr(cost, "_pricing", cost._fallback_pricing())
+    sol = make_entry(model="gpt-5.6-sol", input_tokens=1_000_000, output_tokens=1_000_000)
+    assert cost.calculate_cost(sol) == pytest.approx(5.0 + 30.0)
+    terra = make_entry(model="gpt-5.6-terra", input_tokens=1_000_000, output_tokens=1_000_000)
+    assert cost.calculate_cost(terra) == pytest.approx(2.0 + 12.0)
+    luna = make_entry(model="gpt-5.6-luna", input_tokens=1_000_000, output_tokens=1_000_000)
+    assert cost.calculate_cost(luna) == pytest.approx(0.2 + 1.2)
+    # dated / variant 后缀靠前缀命中本档，不被 gpt-5 吞
+    dated = make_entry(model="gpt-5.6-terra-20260709", input_tokens=1_000_000)
+    assert cost.calculate_cost(dated) == pytest.approx(2.0)
+    # 裸 "gpt-5.6"（无档位后缀）反向兜底到最短 key，即旗舰 sol
+    bare = make_entry(model="gpt-5.6", input_tokens=1_000_000)
+    assert cost.calculate_cost(bare) == pytest.approx(5.0)
+    # 系列内未知新档退回旗舰 sol 价（宁可高估不低估），不按 gpt-5 错价、不归零
+    nova = make_entry(model="gpt-5.6-nova", input_tokens=1_000_000)
+    assert cost.calculate_cost(nova) == pytest.approx(5.0)
+
+
+def test_gpt56_and_opus5_have_short_names():
+    from token_tracker.ui.format import MODEL_SHORT
+    for k in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "claude-opus-5"):
+        assert k in MODEL_SHORT, f"MODEL_SHORT missing {k}"
+
+
+def test_opus5_falls_back_to_opus_family_pricing(monkeypatch):
+    # Opus 5 与 Opus 4.8 同价（$5/$25），老系列新版本靠家族兜底即可，无需专属内置价
+    monkeypatch.setattr(cost, "_pricing", cost._fallback_pricing())
+    entry = make_entry(model="claude-opus-5", input_tokens=1_000_000, output_tokens=1_000_000)
+    assert cost.calculate_cost(entry) == pytest.approx(5.0 + 25.0)
+
+
+def test_codex_auto_review_falls_back_to_gpt56_sol(monkeypatch):
+    # Codex stop-time auto-review 用虚拟 model name codex-auto-review，按当代旗舰（gpt-5.6-sol）价兜底
+    # （不归零）；与 gpt-5.5 同价 $5/$30，期望值不变
     monkeypatch.setattr(cost, "_pricing", cost._fallback_pricing())
     entry = make_entry(model="codex-auto-review", input_tokens=1_000_000, output_tokens=1_000_000)
     assert cost.calculate_cost(entry) == pytest.approx(35.0)

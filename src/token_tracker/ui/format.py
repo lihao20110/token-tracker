@@ -10,6 +10,7 @@ AGENT_LABEL = {"claude-code": "Claude Code", "codex": "Codex", "kimi": "Kimi Cod
 
 MODEL_SHORT = {
     "claude-fable-5": "Fable 5",
+    "claude-opus-5": "Opus 5",
     "claude-opus-4-6": "Opus 4.6",
     "claude-opus-4-7": "Opus 4.7",
     "claude-opus-4-8": "Opus 4.8",
@@ -18,6 +19,10 @@ MODEL_SHORT = {
     "claude-sonnet": "Sonnet",
     "claude-haiku-4-5-20251001": "Haiku 4.5",
     "claude-haiku": "Haiku",
+    # OpenAI GPT-5.6 系列（sol/terra/luna 三档）
+    "gpt-5.6-sol": "GPT-5.6 Sol",
+    "gpt-5.6-terra": "GPT-5.6 Terra",
+    "gpt-5.6-luna": "GPT-5.6 Luna",
     # Kimi Code 会话 wire.jsonl 里的模型 id（usage.record.model，带 alias 前缀）
     "kimi-code/k3": "Kimi K3",
     "kimi-code/kimi-for-coding": "Kimi K2.7",
