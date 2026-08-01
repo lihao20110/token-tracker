@@ -2,7 +2,7 @@
 """token-tracker Codex 伪 statusline（Stop hook）：每次回答后追加两行彩色 status，仿 CC statusline。
 L1：[项目](分支 +A -D) | Total: <会话累计 token> | Cost: $<第三方 provider 会话成本> | Model: <模型>
 L2：Limit: 5h <bar> <%> (reset) | 7d <bar> <%> (reset) | <window> Ctx <bar> <%>
-数据：Total = 当前会话 total_token_usage（in+out+reasoning）；5h/7d 优先取当前会话自己的
+数据：Total = 当前会话 total_token_usage（API 的 total_tokens = in+out，reasoning 是 out 子集不重复计）；5h/7d 优先取当前会话自己的
 rate_limits 快照（load_session_rate_limits），回退 codex.load_rate_limits(provider=当前会话
 model_provider)——同 CODEX_HOME 多账号/多 provider 混跑时不串配额；Ctx = last_input ÷ window；
 Model = Stop payload.model；会话按 transcript_path 精确定位、回退最近文件。
@@ -58,10 +58,11 @@ def _bar(pct, width=8):
 
 
 def _total_tokens(info):
-    """会话累计 token = total_token_usage 的 input(含 cached) + output + reasoning。"""
+    """会话累计 token：优先 API 返回的 total_tokens（= input + output，实测逐会话相等）；
+    reasoning_output_tokens 是 output 的子集拆分，加它会重复计数。"""
     try:
         u = info.get("total_token_usage") or {}
-        return u.get("input_tokens", 0) + u.get("output_tokens", 0) + u.get("reasoning_output_tokens", 0)
+        return u.get("total_tokens", 0) or u.get("input_tokens", 0) + u.get("output_tokens", 0)
     except Exception:
         return 0
 
@@ -186,7 +187,8 @@ def _session_cost(info, model):
         u = (info or {}).get("total_token_usage") or {}
         cached = u.get("cached_input_tokens", 0)
         total_in = u.get("input_tokens", 0)
-        total_out = u.get("output_tokens", 0) + u.get("reasoning_output_tokens", 0)
+        # reasoning_output_tokens 是 output_tokens 的子集拆分，output 价已含 reasoning，不能再加
+        total_out = u.get("output_tokens", 0)
         if not model or (total_in == 0 and total_out == 0):
             return None
         from token_tracker.adapters.types import UsageEntry

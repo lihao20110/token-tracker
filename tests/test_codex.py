@@ -174,6 +174,26 @@ def test_spark_only_session_has_no_standard_weekly_limit(tmp_path):
     assert codex._extract_rate_limits(path, models={}) is None
 
 
+def test_reasoning_tokens_not_double_counted(tmp_path):
+    # reasoning_output_tokens 是 output_tokens 的子集拆分（实测 total_tokens == input + output），
+    # 旧版 output+reasoning 重复计，token 统计与 cost 都偏高
+    events = [
+        {"timestamp": "2026-06-22T10:00:00.000Z", "type": "session_meta",
+         "payload": {"id": "s1", "timestamp": "2026-06-22T10:00:00.000Z", "cwd": "/tmp/proj"}},
+        {"timestamp": "2026-06-22T10:03:00.000Z", "type": "event_msg",
+         "payload": {"type": "token_count", "info": {"total_token_usage": {
+             "input_tokens": 18406, "cached_input_tokens": 9216,
+             "output_tokens": 1054, "reasoning_output_tokens": 803, "total_tokens": 19460}}}},
+    ]
+    path = _write_session(tmp_path, events)
+    entries: list = []
+    codex._parse_jsonl(path, {}, entries, set(), None)
+    assert len(entries) == 1
+    assert entries[0].input_tokens == 18406 - 9216
+    assert entries[0].output_tokens == 1054  # 不含 reasoning 803
+    assert entries[0].cache_read_tokens == 9216
+
+
 def test_load_rate_limits_uses_newest_standard_event_across_sessions(tmp_path, monkeypatch):
     newer_standard = {
         "primary": {"used_percent": 73.0, "window_minutes": 10080, "resets_at": 9_999_999_999},

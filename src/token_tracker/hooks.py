@@ -49,7 +49,7 @@ KIMI_STATUSLINE_QUOTA_PATH = os.path.join(_TT, "tt-kimi-quota.json")
 STATUS_FILE = config.STATUS_FILE                          # CC statusline 缓存（单一权威定义在 config）
 TERMINAL_MAP_FILE = config.TERMINAL_MAP_FILE              # Codex Stop hook 采集的终端定位映射
 HOOK_VERSION = "2.1"  # 2.0: 采集 _terminal_map（sidebar 点击跳转）；2.1: 共享状态无条件随帧携带、防异常帧清表
-STATUSLINE_HOOK_VERSION = "1.5"  # 1.3: Limit 按当前会话/同 provider 取数不串账号；1.4: 第三方 provider 显示会话 Cost；1.5: 无配额数据时 L2 不挂 Limit: 前缀
+STATUSLINE_HOOK_VERSION = "1.6"  # 1.4: 第三方 provider 显示会话 Cost；1.5: 无配额不挂 Limit: 前缀；1.6: Total 不再重复计 reasoning（实测 total_tokens==in+out）
 KIMI_STATUSLINE_HOOK_VERSION = "1.1"  # 1.1: Windows 适配（stdout UTF-8、detached 用 creationflags、git 解码 errors=replace）
 
 CC_BACKUP_PATH = os.path.join(_TT, "cc-backup.json")

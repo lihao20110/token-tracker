@@ -243,7 +243,8 @@ def _parse_jsonl(
 
     cached = last_usage.get("cached_input_tokens", 0)
     input_tokens = last_usage.get("input_tokens", 0) - cached
-    output_tokens = last_usage.get("output_tokens", 0) + last_usage.get("reasoning_output_tokens", 0)
+    # reasoning_output_tokens 是 output_tokens 的子集拆分（实测 total_tokens == input + output），不能再加
+    output_tokens = last_usage.get("output_tokens", 0)
 
     if input_tokens == 0 and output_tokens == 0:
         return
