@@ -309,3 +309,17 @@ def test_session_provider_reads_session_meta(tmp_path):
     assert codex.session_provider(path) == "deepseek"
     empty = _write_session(tmp_path, [], "empty.jsonl")
     assert codex.session_provider(empty) == ""
+
+
+def test_latest_session_provider_picks_newest_with_meta(tmp_path, monkeypatch):
+    older = _write_session(tmp_path, [_meta_event("openai")], "older.jsonl")
+    newer = _write_session(tmp_path, [_meta_event("deepseek")], "newer.jsonl")
+    no_meta = _write_session(tmp_path, [], "nometa.jsonl")
+    os.utime(older, (100, 100))
+    os.utime(newer, (200, 200))
+    os.utime(no_meta, (300, 300))  # 最新但无 session_meta → 跳过取次新的
+    monkeypatch.setattr(codex, "SESSIONS_DIR", str(tmp_path))
+
+    assert codex.latest_session_provider() == "deepseek"
+    monkeypatch.setattr(codex, "SESSIONS_DIR", str(tmp_path / "nonexistent"))
+    assert codex.latest_session_provider() == ""

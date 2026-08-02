@@ -33,7 +33,15 @@ from .ui.tables import (
 )
 
 AGENT_LOADERS = {"claude-code": claude, "codex": codex, "kimi": kimi}
-RATE_LIMIT_LOADERS = {"claude-code": load_claude_rate_limits, "codex": codex.load_rate_limits}
+
+
+def _load_codex_rate_limits():
+    """CLI 面板的 Codex 额度：按最近活跃会话的 provider 过滤，
+    多账号 / 多 model_provider（如 codex --profile deepseek）混跑时不显示错账号配额。"""
+    return codex.load_rate_limits(provider=codex.latest_session_provider() or None)
+
+
+RATE_LIMIT_LOADERS = {"claude-code": load_claude_rate_limits, "codex": _load_codex_rate_limits}
 
 # agent 过滤 flag → agent_id（issue #19；_extract_agent_arg 解析、_select_agents 反查共用）
 _FLAG_TO_ID = {"--claude": "claude-code", "--codex": "codex", "--kimi": "kimi"}

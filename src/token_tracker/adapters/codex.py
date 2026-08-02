@@ -107,6 +107,22 @@ def session_provider(path: Path | str) -> str:
     return ""
 
 
+def latest_session_provider() -> str:
+    """最近活跃会话的 model_provider（CLI 面板 Limit 卡片按它过滤，混跑时不显示错账号配额）。
+
+    只扫最近改动的几个文件，找到第一个带 session_meta.model_provider 的即返回。
+    """
+    sessions_path = Path(SESSIONS_DIR)
+    if not sessions_path.is_dir():
+        return ""
+    jsonl_files = sorted(sessions_path.rglob("*.jsonl"), key=_safe_mtime, reverse=True)
+    for path in jsonl_files[:_RATE_LIMIT_SCAN_FILES]:
+        provider = session_provider(path)
+        if provider:
+            return provider
+    return ""
+
+
 def _safe_mtime(path: Path) -> float:
     try:
         return path.stat().st_mtime
