@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """token-tracker Kimi Code statusline（tui.toml [status_line].command）：渲染一行会话状态。
-[项目](分支* +A -D ?U) | Total: <会话累计 token> | Cost: $<累计成本> | 5h X% | 7d Y% | Model: <模型>/<权限模式>
+[项目](分支* +A -D ?U) | Total: <会话累计 token> | Cost: $<累计成本> | 5h X% | 7d Y% | Model: <模型>/<effort>/<权限模式>
 （字段、顺序、配色与 CC statusline 同风格；Kimi 只取 stdout 首行（二进制 runStatusLineCommand 硬编码截断），故压成一行。
 5h/7d 限额走云端 GET <provider.base_url>/usages（OAuth access_token，同 CLI /usage 端点）：
 渲染只读本地配额缓存、零网络；缓存超 120s 派生 detached 子进程后台刷新，token 过期/失败就整段不显示）
 数据：model/cwd/gitBranch/permissionMode/sessionId 取 stdin JSON 快照；
 token/成本增量解析本会话 wire.jsonl（state 文件缓存 offset，避免每帧全量扫，300ms 上限内零网络）；
+effort 取 wire `llm.request.thinkingEffort`（实际生效档）；Out t/s（output ÷ 请求时长）计算与持久化保留、当前不展示；
 终端映射写 tt-terminal-map.json（与 Codex 同文件同 schema），供 tt sidebar 点击跳转。
 被 Kimi 以 1s 节流反复调用：任何解析失败都 fail-open 输出一行，绝不 traceback 到 stdout。
 由 `tt setup` 生成，勿手改。"""
@@ -88,15 +89,17 @@ def _cost(model, i, o, cr, cc):
 
 
 def _update_usage(session_id):
-    """增量解析本会话 wire.jsonl 的 usage.record，返回 (会话累计总 token, 累计成本 USD)。
+    """增量解析本会话 wire.jsonl，返回 (会话累计总 token, 累计成本 USD, effort, out_tps)。
 
-    state：{sessionId: {"wire": path, "offset": int, "models": {model: {"i","o","cr","cc"}}}}，
+    state：{sessionId: {"wire": path, "offset": int, "models": {model: {"i","o","cr","cc"}},
+            "effort": str, "tps": float, "req_time": float}}，
     flock 串行合并 + 原子替换 + LRU 20（文件操作骨架同 codex statusline 的 _record_terminal_map）。
     state 里的 wire 路径失效时回退 glob <kimi_home>/sessions/*/<sessionId>/agents/main/wire.jsonl；
     offset > 文件大小说明 wire 被截断 → 从头重读、旧累计作废（否则重复计数）。
+    effort / tps 只在消费到新字节时刷新（llm.request.thinkingEffort、output÷请求时长），其余帧回放 state。
     """
     if not session_id:
-        return 0, 0.0
+        return 0, 0.0, "", None
     tmp = None
     lock = None
     try:
@@ -127,6 +130,15 @@ def _update_usage(session_id):
         models = models if isinstance(models, dict) else {}
         offset = entry.get("offset")
         offset = offset if isinstance(offset, int) else 0
+        # effort / tps 持久化在 state：渲染帧远多于新 usage.record，大部分帧直接回放上次值
+        effort = entry.get("effort")
+        effort = effort if isinstance(effort, str) else ""
+        tps = entry.get("tps")
+        tps = float(tps) if isinstance(tps, (int, float)) else None
+        # llm.request 与其 usage.record 相隔整个生成时长（数秒~数十秒），1s 节流下必然落在不同
+        # 消费帧——req_time 必须随 state 持久化，只在内存里保存会导致永远配对不上
+        req_time = entry.get("req_time")
+        req_time = float(req_time) if isinstance(req_time, (int, float)) else None
         if wire:
             try:
                 if offset > os.path.getsize(wire):  # 文件被截断 → 重置
@@ -145,7 +157,17 @@ def _update_usage(session_id):
                         data = json.loads(line)
                     except ValueError:
                         continue
-                    if not isinstance(data, dict) or data.get("type") != "usage.record":
+                    if not isinstance(data, dict):
+                        continue
+                    dtype = data.get("type")
+                    if dtype == "llm.request":
+                        rt = data.get("time")
+                        req_time = float(rt) if isinstance(rt, (int, float)) else None
+                        eff = data.get("thinkingEffort")  # 实际生效的思考档（跟随 /model 切换）
+                        if isinstance(eff, str) and eff:
+                            effort = eff
+                        continue
+                    if dtype != "usage.record":
                         continue
                     usage = data.get("usage")
                     if not isinstance(usage, dict):
@@ -160,10 +182,21 @@ def _update_usage(session_id):
                         val = usage.get(field)
                         if isinstance(val, (int, float)):
                             bucket[short] = bucket.get(short, 0) + int(val)
+                    # Out TPS = 本请求 output ÷ 请求时长（llm.request→usage.record，含 prefill 的端到端有效值）。
+                    # 与 CC 的 _compute_tps 同策略：算出会显示成 0 的不刷新、保持上次值
+                    t = data.get("time")
+                    out = usage.get("output")
+                    if (req_time and isinstance(t, (int, float)) and t > req_time
+                            and isinstance(out, (int, float)) and out > 0):
+                        new_tps = out / ((t - req_time) / 1000)
+                        if round(new_tps) > 0:
+                            tps = new_tps
+                    req_time = None
             except OSError:
                 pass
         state.pop(session_id, None)
-        state[session_id] = {"wire": wire, "offset": offset, "models": models}
+        state[session_id] = {"wire": wire, "offset": offset, "models": models,
+                             "effort": effort, "tps": tps, "req_time": req_time}
         for key in list(state)[:-MAX_SESSIONS]:
             del state[key]
         # 无新增字节（offset/wire 都没动）→ 跳过写盘：Kimi 1s 节流反复调用，没必要每帧重写 state
@@ -184,9 +217,9 @@ def _update_usage(session_id):
             cc = int(bucket.get("cc", 0))
             total += i + o + cr + cc
             cost += _cost(model, i, o, cr, cc)
-        return total, cost
+        return total, cost, effort, tps
     except OSError:
-        return 0, 0.0
+        return 0, 0.0, "", None
     finally:
         if tmp:
             try:
@@ -446,9 +479,9 @@ def _render(payload):
     session_id = payload.get("sessionId")
     session_id = session_id if isinstance(session_id, str) else ""
     _record_terminal_map(session_id)
-    total, cost = _update_usage(session_id)
+    total, cost, effort, tps = _update_usage(session_id)
 
-    # 与 CC statusline 同风格同序（单行版）：[项目](分支) | Total | Cost | 5h/7d | Model/权限模式
+    # 与 CC statusline 同风格同序（单行版）：[项目](分支) | Total | Cost | Out t/s | 5h/7d | Model/effort/权限模式
     # 5h/7d 走云端 /usages 的后台缓存（stdin 快照与 wire 都没有限额数据）。
     segments = []
     cwd = payload.get("cwd")
@@ -460,10 +493,14 @@ def _render(payload):
     if total:
         segments.append(f"{C['total']}Total: {fmt_tokens(total)}{RST}")
         segments.append(f"{C['total']}Cost: ${cost:.2f}{RST}")
+    if tps:
+        pass  # Out t/s 先不展示（用户决定），tps 计算与 state 持久化逻辑保留，想恢复加一行 segments.append 即可
     _maybe_refresh_quota()
     segments.extend(_render_quota())
     model = payload.get("model")
     if isinstance(model, str) and model:
+        if effort:
+            model += f"/{effort}"  # wire llm.request 的 thinkingEffort（实际生效档）
         perm = payload.get("permissionMode")
         if isinstance(perm, str) and perm:
             model += f"/{perm}"  # 同 CC Model 段拼 effort/fast 的做法

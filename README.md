@@ -66,8 +66,8 @@ Codex 官方暂不支持自定义 StatusLine。Token Tracker 通过 hook 注入�
 
 **两行布局**：
 
-- **L1** `[项目](分支 +A -D) | Total: <会话累计 token> | Model: <模型 推理强度>` —— Total 橙、Model 红
-- **L2** `Limit: 5h <进度条> % (reset <倒计时>) | 7d <进度条> % (reset <倒计时>) | <窗口> Ctx <进度条> %`
+- **L1** `[项目](分支 +A -D) | Total: <会话累计 token> | Model: <模型 推理强度>` —— Total 橙、Model 红；第三方 API provider（如 DeepSeek）无订阅配额，L1 加显示会话 Cost（内置官方定价估算）
+- **L2** `Limit: 5h <进度条> % (reset <倒计时>) | 7d <进度条> % (reset <倒计时>) | <窗口> Ctx <进度条> %` —— 配额按当前会话 / 同 model_provider 取数，多账号多 provider 混跑不串数据；无配额数据时不挂 `Limit:` 前缀
 
 渲染 24-bit 真彩色、**不进模型上下文**（实测），**配色跟随当前主题**（与 CLI 报表 / CC 状态栏同源，`tt theme` 切换三者一起变）。`tt unsetup` 一并移除。
 
@@ -75,9 +75,9 @@ Codex 官方暂不支持自定义 StatusLine。Token Tracker 通过 hook 注入�
 
 基于 Kimi Code 官方 `status_line` 接口（`tui.toml`），单行真彩色状态栏：
 
-`[项目](分支* +A -D ?U) | Total: 21.2M | Cost: $9.08 | 5h: 18% | 7d: 15% | Model: K3/auto`（与 CC 状态栏同风格；5h/7d 限额走云端 `/usages` 缓存，每 2 分钟后台刷新一次）
+`[项目](分支* +A -D ?U) | Total: 21.2M | Cost: $9.08 | 5h: 18% | 7d: 15% | Model: K3/high/auto`（与 CC 状态栏同风格；5h/7d 限额走云端 `/usages` 缓存，每 2 分钟后台刷新一次）
 
-- 项目 / 分支 / 模型 / 权限模式来自 Kimi 官方快照，分支段的未提交增删行 / 未跟踪数按 `git diff --numstat` + `git ls-files` 统计（同 CC 状态栏）；Total 与 Cost 由状态栏脚本按会话 `wire.jsonl` **增量**累计（offset 缓存，每秒级调用只读新增部分），成本按内置 Kimi 官方定价估算
+- 项目 / 分支 / 模型 / 权限模式来自 Kimi 官方快照（快照无思考档位，effort 取自会话 wire 里实际请求的 `thinkingEffort`），分支段的未提交增删行 / 未跟踪数按 `git diff --numstat` + `git ls-files` 统计（同 CC 状态栏）；Total 与 Cost 由状态栏脚本按会话 `wire.jsonl` **增量**累计（offset 缓存，每秒级调用只读新增部分），成本按内置 Kimi 官方定价估算
 - macOS / Linux / Windows 全平台支持（Windows 控制台 GBK 编码、后台刷新进程 detach 方式均已适配）
 - 已有自定义 `status_line.command` 时默认不覆盖（向导里选 No 也完全不碰）；`tt unsetup` 精确还原
 

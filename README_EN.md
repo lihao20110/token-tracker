@@ -65,8 +65,8 @@ Codex doesn't yet support custom StatusLine. Token Tracker injects a **faux stat
 
 **Two-line layout**:
 
-- **L1** `[project](branch +A -D) | Total: <session tokens> | Model: <model reasoning>` — Total in orange, Model in red
-- **L2** `Limit: 5h <bar> % (reset <ttl>) | 7d <bar> % (reset <ttl>) | <window> Ctx <bar> %`
+- **L1** `[project](branch +A -D) | Total: <session tokens> | Model: <model reasoning>` — Total in orange, Model in red; third-party API providers (e.g. DeepSeek) have no subscription quota, so L1 also shows session Cost (estimated with built-in official rates)
+- **L2** `Limit: 5h <bar> % (reset <ttl>) | 7d <bar> % (reset <ttl>) | <window> Ctx <bar> %` — quota is read from the current session / same model_provider, so multiple accounts and providers never cross-contaminate; the `Limit:` prefix is hidden when no quota data exists
 
 Renders 24-bit truecolor, **does not enter the model context** (verified), and **follows the current theme** (same source as the CLI reports / CC status line; `tt theme` switches all three together). `tt unsetup` removes it.
 
@@ -74,9 +74,9 @@ Renders 24-bit truecolor, **does not enter the model context** (verified), and *
 
 Built on Kimi Code's official `status_line` API (`tui.toml`) — a single truecolor line:
 
-`[project](branch* +A -D ?U) | Total: 21.2M | Cost: $9.08 | 5h: 18% | 7d: 15% | Model: K3/auto` (same style as the CC status line; 5h/7d quota comes from the cloud `/usages` endpoint, cached and refreshed in the background every 2 minutes)
+`[project](branch* +A -D ?U) | Total: 21.2M | Cost: $9.08 | 5h: 18% | 7d: 15% | Model: K3/high/auto` (same style as the CC status line; 5h/7d quota comes from the cloud `/usages` endpoint, cached and refreshed in the background every 2 minutes)
 
-- Project / branch / model / permission mode come from Kimi's official snapshot; the branch segment's uncommitted +/− line counts and untracked files are computed via `git diff --numstat` + `git ls-files` (same as the CC status line); Total and Cost are accumulated **incrementally** from the session's `wire.jsonl` by the status-line script (offset-cached, only new bytes are read per run), priced with the built-in official Kimi rates
+- Project / branch / model / permission mode come from Kimi's official snapshot (the snapshot has no thinking-effort field — effort is read from the actual `thinkingEffort` of requests in the session wire); the branch segment's uncommitted +/− line counts and untracked files are computed via `git diff --numstat` + `git ls-files` (same as the CC status line); Total and Cost are accumulated **incrementally** from the session's `wire.jsonl` by the status-line script (offset-cached, only new bytes are read per run), priced with the built-in official Kimi rates
 - Fully supported on macOS / Linux / Windows (Windows console GBK encoding and background-process detaching are both handled)
 - An existing custom `status_line.command` is never overwritten by default (the wizard also lets you opt out); `tt unsetup` restores the exact prior state
 
