@@ -131,13 +131,52 @@ def test_prompt_hook_pushes_codex_event_to_config_channel(tmp_path, monkeypatch)
     assert send.call_args.kwargs == {"channel_dir": str(tmp_path)}
 
 
+def test_open_ghostty_runs_packaged_worker_with_same_python(monkeypatch, tmp_path):
+    succeeded = subprocess.CompletedProcess(["ghostty"], 0, "tt_sidebar_split_ok", "")
+    run = MagicMock(return_value=succeeded)
+    monkeypatch.setattr(sidebar_command, "_run", run)
+    monkeypatch.setattr(sidebar_command.sys, "executable", "/venv/bin/python")
+    monkeypatch.chdir(tmp_path)
+
+    ok, _message = sidebar_command._open_ghostty("thread")
+
+    assert ok
+    argv = run.call_args.args[0]
+    assert argv[:4] == ["/venv/bin/python", "-B", "-m", "token_tracker.ghostty_split"]
+    assert argv[4] == "--command"
+    assert argv[-2:] == ["--cwd", str(tmp_path)]
+
+
+def test_open_ghostty_reports_raw_split_without_resize(monkeypatch):
+    succeeded = subprocess.CompletedProcess(["ghostty"], 0, "tt_sidebar_split_ok_raw", "")
+    monkeypatch.setattr(sidebar_command, "_run", MagicMock(return_value=succeeded))
+
+    ok, message = sidebar_command._open_ghostty("thread")
+
+    assert ok
+    assert "平分" in message
+
+
+def test_open_split_routes_ghostty_terminal(monkeypatch):
+    monkeypatch.setenv("CODEX_THREAD_ID", "thread")
+    monkeypatch.setenv("TERM_PROGRAM", "ghostty")
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.delenv("ITERM_SESSION_ID", raising=False)
+    open_ghostty = MagicMock(return_value=(True, "ok"))
+    monkeypatch.setattr(sidebar_command, "_open_ghostty", open_ghostty)
+
+    assert sidebar_command.open_split() == 0
+    open_ghostty.assert_called_once_with("thread")
+
+
 def test_open_split_rejects_unsupported_terminal(monkeypatch, capsys):
     monkeypatch.setenv("CODEX_THREAD_ID", "thread")
     monkeypatch.delenv("TMUX_PANE", raising=False)
     monkeypatch.delenv("ITERM_SESSION_ID", raising=False)
+    monkeypatch.delenv("TERM_PROGRAM", raising=False)
 
     assert sidebar_command.open_split() == 1
-    assert "仅支持 tmux 或 iTerm2" in capsys.readouterr().err
+    assert "tmux、iTerm2 或 Ghostty" in capsys.readouterr().err
 
 
 def test_main_routes_actions(monkeypatch):

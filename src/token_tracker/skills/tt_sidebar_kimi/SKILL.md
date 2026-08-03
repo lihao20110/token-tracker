@@ -15,7 +15,7 @@ Run the installed launcher exactly once:
 __TT_SIDEBAR_COMMAND__
 ```
 
-The launcher splits tmux or iTerm2 to open the sidebar pane, so it needs permission to control the terminal. If the runtime asks for approval, approve this exact command only; never approve Python generally.
+The launcher splits tmux, iTerm2, or Ghostty (macOS, ≥ 1.3.0) to open the sidebar pane, so it needs permission to control the terminal. If the runtime asks for approval, approve this exact command only; never approve Python generally.
 
 Return the launcher's output directly. Do not run regular `tt sidebar`, inject a command into a transient shell, or open another sidebar in the current pane. If the launcher fails, report only its concise stage error.
 

@@ -122,7 +122,7 @@ Codex 官方暂不支持自定义 StatusLine。Token Tracker 通过 hook 注入�
 $tt-sidebar
 ```
 
-- 支持 iTerm2 与 tmux；iTerm2 无需启用 Python API。首次使用会先出现 Codex 的沙箱外执行确认，随后 macOS 可能再请求「自动化」授权，请允许 Token Tracker 控制 iTerm2；两次确认均属预期，后续可复用授权。原会话窗格保持焦点。iTerm2 原生全屏会拒绝 AppleScript 调整列宽，需先退出全屏再执行。
+- 支持 iTerm2、Ghostty（≥ 1.3.0，macOS）与 tmux；iTerm2 无需启用 Python API。首次使用会先出现 Codex 的沙箱外执行确认，随后 macOS 可能再请求「自动化」授权，请允许 Token Tracker 控制 iTerm2 / Ghostty；两次确认均属预期，后续可复用授权。原会话窗格保持焦点。iTerm2 原生全屏会拒绝 AppleScript 调整列宽，需先退出全屏再执行。
 - `tt setup` 把 Codex 的伪 statusline `Stop` 与 sidebar `UserPromptSubmit` 统一安装到用户级 `hooks.json`；后者用本地 FIFO 把新提示词推给已打开的分屏，无 sidebar 时立即返回，不轮询 transcript、不上传或持久化提示词。
 - Codex 会要求审查非托管 Hook：安装后运行 `/hooks`，信任 Token Tracker 对应项。Skill 未立即出现时重启 Codex。
 - `tt unsetup` 会一并移除 Token Tracker 管理的 Skill 与 Hook；若 `~/.agents/skills/tt-sidebar` 已是用户自己的同名 Skill，安装与卸载都不会覆盖它。
@@ -137,7 +137,7 @@ $tt-sidebar
 /skill:tt-sidebar
 ```
 
-- 支持 iTerm2 与 tmux；iTerm2 的 macOS「自动化」授权提示属预期。Kimi 会话内没有会话 ID 环境变量，启动器按「workDir 等于当前目录、最近更新」定位当前会话。
+- 支持 iTerm2、Ghostty（≥ 1.3.0，macOS）与 tmux；iTerm2 / Ghostty 的 macOS「自动化」授权提示属预期。Kimi 会话内没有会话 ID 环境变量，启动器按「workDir 等于当前目录、最近更新」定位当前会话。
 - hook 同样走本地 FIFO 推送，无 sidebar 时立即返回；新会话生效，`tt unsetup` 一并移除。
 
 ## 安装
