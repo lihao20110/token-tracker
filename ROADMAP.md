@@ -5,7 +5,7 @@
 
 ## 当前阶段
 
-**Kimi Code 新版 `state.json` 兼容修复完成（2026-08-10 12:00，待发版）**：新版会话元数据由 `workDir + ISO updatedAt` 改为 `cwd + epoch ms updatedAt`，导致 `/skill:tt-sidebar` 无法回退识别当前 Kimi 会话、在进入 Ghostty 分屏前退出。当前已同时兼容新旧字段与时间格式，项目名解析也同步支持 `cwd`；真实失败会话用修复后源码已成功命中。完整 pytest **334 全绿**（含英文 dumb terminal CI 模拟）、Ruff 全过、mypy 41 个源文件 0 报错、`git diff --check` 通过。尚未更新已安装的 0.5.3 或公开发布。
+**`0.5.4` 发布验证完成（2026-08-10 12:14，待 tag / push / PyPI）**：本版修复 Kimi Code 新版 `state.json` 由 `workDir + ISO updatedAt` 改为 `cwd + epoch ms updatedAt` 后，`/skill:tt-sidebar` 无法回退识别当前会话的问题；新旧字段与时间格式均兼容，项目名解析同步支持 `cwd`，真实失败会话用修复后源码已成功命中。`pyproject.toml` / `uv.lock` 已同步 0.5.4；完整 pytest **334 全绿**、英文 dumb terminal CI 模拟 **334 全绿**、Ruff 全过、mypy 41 个源文件 0 报错，`uv lock --check` 与 `git diff --check` 通过；sdist / wheel 构建与 Twine check 通过，METADATA 版本与关键包内容正确。构建只有既有 setuptools license 弃用警告，不影响发布。
 
 **`0.5.3` 已发布 PyPI（2026-08-03，源码与 tag 已 push）**：本版主体是 **`$tt-sidebar` 自动分屏新增 Ghostty 后端**（macOS，Ghostty ≥ 1.3.0）——`ghostty_split.py` 走 1.3 起官方 AppleScript 字典 `split direction right with configuration`，字典不暴露列宽，1/3 收敛靠新窗格 `stty` 回写列数文件 + `resize_split` 闭环（分步过渡动画为确认保留的默认观感），启动器不依赖 `/dev/tty`；`sidebar_command` 按 `TERM_PROGRAM=ghostty` 路由（tmux > iTerm2 > Ghostty），Skill 模板双份同步。发布 commit `20d5fa5` + annotated tag `v0.5.3` 已 push；发布前完整 pytest **332 全绿**（含 CI 模拟环境）、Ruff 全过、mypy 41 个源文件 0 报错；wheel 含 `ghostty_split.py` 与双 Skill 模板，Twine check 通过；PyPI JSON 已传播，远端 wheel / sdist SHA-256 与本地产物一致，`uvx --no-cache` 安装后 `tt --version` 正确输出 0.5.3。已知边界：`tt sidebar` 总览点击跳转仍只支持 tmux / iTerm2（Ghostty 跳转见「待办 / 计划」）；自动分屏跟随主会话退出（kqueue/pidfd）仍在待办。
 
