@@ -19,7 +19,7 @@ def test_current_session_id_prefers_explicit_then_codex(monkeypatch):
 
 
 def test_current_session_id_falls_back_to_kimi_cwd_session(tmp_path, monkeypatch):
-    # Kimi 会话内无 session id 环境变量 → 回退「workDir == cwd 且 updatedAt 最新」的会话
+    # Kimi 会话内无 session id 环境变量 → 回退 state.json 中工作目录匹配且 updatedAt 最新的会话
     for var in ("TT_SIDEBAR_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_SESSION_ID"):
         monkeypatch.delenv(var, raising=False)
     kimi_home_dir = tmp_path / ".kimi-code"

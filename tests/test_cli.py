@@ -145,7 +145,7 @@ def test_current_session_agent_ignores_claude_config_dir(monkeypatch):
 
 
 def test_current_session_agent_detects_kimi_via_fresh_cwd_session(monkeypatch):
-    # Kimi 无会话环境变量：回退「workDir==cwd 且 updatedAt 新鲜」目录探测，且要带新鲜度参数
+    # Kimi 无会话环境变量：回退 state.json 中工作目录匹配且 updatedAt 新鲜的目录探测，且要带新鲜度参数
     for var in ("CODEX_THREAD_ID", "CODEX_SANDBOX", "CLAUDECODE"):
         monkeypatch.delenv(var, raising=False)
     calls: list[dict] = []

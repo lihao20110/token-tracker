@@ -31,8 +31,8 @@ def detect() -> AgentInfo | None:
 
 
 def current_session_id_for_cwd(fresh_within_s: float | None = None) -> str:
-    """Kimi 会话内没有 session id 环境变量（实测），回退：取 workDir 等于当前目录、
-    state.json updatedAt 最新的那个 Kimi 会话。
+    """Kimi 会话内没有 session id 环境变量（实测），回退：取 cwd/workDir 等于当前目录、
+    state.json updatedAt 最新的那个 Kimi 会话（兼容 epoch 毫秒与旧版 ISO 字符串）。
 
     fresh_within_s：只认 updatedAt 在该秒数内的会话（None 不限）。sidebar 启动器在用户
     刚提交提示词后调用、必最新，不限；cli 会话内收窄靠它避免「目录里曾有过 kimi 会话」
@@ -46,17 +46,30 @@ def current_session_id_for_cwd(fresh_within_s: float | None = None) -> str:
             data = json.loads(state_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if not isinstance(data, dict) or data.get("workDir") != cwd:
+        if not isinstance(data, dict) or (data.get("cwd") or data.get("workDir")) != cwd:
             continue
-        try:
-            ts = datetime.fromisoformat(str(data.get("updatedAt", "")).replace("Z", "+00:00"))
-        except ValueError:
+        ts = _state_updated_at(data.get("updatedAt"))
+        if ts is None:
             continue
         if fresh_within_s is not None and (now - ts).total_seconds() > fresh_within_s:
             continue
         if best_ts is None or ts > best_ts:
             best_id, best_ts = state_path.parent.name, ts
     return best_id
+
+
+def _state_updated_at(raw: object) -> datetime | None:
+    if timestamp := parse_epoch_ms(raw):
+        return timestamp
+    if not isinstance(raw, str):
+        return None
+    try:
+        timestamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return timestamp.astimezone(UTC)
 
 
 def load_entries(hours_back: int = 0) -> list[UsageEntry]:

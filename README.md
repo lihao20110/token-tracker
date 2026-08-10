@@ -137,7 +137,7 @@ $tt-sidebar
 /skill:tt-sidebar
 ```
 
-- 支持 iTerm2、Ghostty（≥ 1.3.0，macOS）与 tmux；iTerm2 / Ghostty 的 macOS「自动化」授权提示属预期。Kimi 会话内没有会话 ID 环境变量，启动器按「workDir 等于当前目录、最近更新」定位当前会话。
+- 支持 iTerm2、Ghostty（≥ 1.3.0，macOS）与 tmux；iTerm2 / Ghostty 的 macOS「自动化」授权提示属预期。Kimi 会话内没有会话 ID 环境变量，启动器按「`cwd`（兼容旧版 `workDir`）等于当前目录、`updatedAt` 最新」定位当前会话。
 - hook 同样走本地 FIFO 推送，无 sidebar 时立即返回；新会话生效，`tt unsetup` 一并移除。
 
 ## 安装

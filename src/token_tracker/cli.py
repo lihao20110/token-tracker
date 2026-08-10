@@ -249,7 +249,7 @@ def _cmd_sidebar(agents, args: list[str]) -> None:
 
 def _current_session_agent() -> str | None:
     """识别当前所在的 agent 会话：Codex / Claude Code 靠**会话内才有**的环境变量；Kimi 无环境变量，
-    回退「state.json workDir == cwd 且 updatedAt 30 分钟内」的目录探测（新鲜度门控避免把
+    回退「state.json cwd/workDir == 当前 cwd 且 updatedAt 30 分钟内」的目录探测（新鲜度门控避免把
     「项目目录里曾有过 kimi 会话」的独立终端误判成会话内）；独立终端返回 None。
     不能用 CLAUDE_CONFIG_DIR 判断——那是用户级配置变量（可长期 export 在 shell profile 里挪配置目录，
     tt 自己也支持它），拿它当会话信号会让独立终端被误判成会话内（报表被过滤、首次运行进不了 wizard）。"""
@@ -284,7 +284,7 @@ def _load_local_mock() -> None:
 # --- 首次运行交互向导判定 ---
 
 def _in_agent_session_env() -> bool:
-    """精确的会话内硬信号（环境变量）。wizard 判定只用这个：kimi 的「workDir==cwd」目录
+    """精确的会话内硬信号（环境变量）。wizard 判定只用这个：kimi 的「state cwd/workDir==当前 cwd」目录
     启发式无法区分「kimi 会话内」与「同项目目录的独立终端」，拿来压向导会把独立终端
     误判成会话内（tt setup 不出向导直接默认全装）——启发式只用于 daily/weekly 报表收窄。"""
     return bool(

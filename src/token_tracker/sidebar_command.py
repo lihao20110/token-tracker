@@ -27,7 +27,7 @@ def _current_session_id() -> str:
 
 
 def _kimi_session_id_for_cwd() -> str:
-    """委托 adapters.kimi 的共享实现（workDir==cwd 且 updatedAt 最新；不限新鲜度——
+    """委托 adapters.kimi 的共享实现（state cwd/workDir==当前 cwd 且 updatedAt 最新；不限新鲜度——
     用户刚提交提示词触发 Skill，该会话必是最新）。"""
     from .adapters.kimi import current_session_id_for_cwd
 

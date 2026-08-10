@@ -1,7 +1,7 @@
 """Kimi Code adapter：wire.jsonl 的 usage.record → UsageEntry。
 
 目录布局照 tests/test_sidebar.py 的 _write_kimi_session：
-`<sessions>/<wd_*>/<session_*>/agents/main/wire.jsonl` + 会话目录下 state.json（workDir）。
+`<sessions>/<wd_*>/<session_*>/agents/main/wire.jsonl` + 会话目录下 state.json（cwd/workDir）。
 """
 
 import json
@@ -69,6 +69,21 @@ def test_usage_records_become_entries(tmp_path, monkeypatch):
     assert first.cost_usd is None  # 走 calculate_cost 定价表
     assert first.dedup_key != second.dedup_key
     assert second.cache_creation_tokens == 10
+
+
+def test_usage_records_use_v2_cwd_for_project(tmp_path, monkeypatch):
+    sessions_dir = tmp_path / "sessions"
+    proj = tmp_path / "v2-project"
+    wire = _write_session(
+        sessions_dir,
+        "session_v2",
+        [_usage_record(60, inputOther=1)],
+    )
+    (wire.parents[2] / "state.json").write_text(json.dumps({"cwd": str(proj)}), encoding="utf-8")
+
+    entries = _load(sessions_dir, monkeypatch=monkeypatch)
+
+    assert entries[0].project == "v2-project"
 
 
 def test_zero_usage_records_skipped(tmp_path, monkeypatch):
@@ -145,6 +160,22 @@ def test_current_session_id_for_cwd_picks_latest_matching(tmp_path, monkeypatch)
     _write_state(sessions_dir, "session_elsewhere", "2026-07-24T12:00:00.000Z", str(tmp_path / "other"))
 
     assert kimi.current_session_id_for_cwd() == "session_new"
+
+
+def test_current_session_id_for_cwd_supports_v2_state_schema(tmp_path, monkeypatch):
+    sessions_dir = tmp_path / "sessions"
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.setattr(kimi, "SESSIONS_DIR", str(sessions_dir))
+    monkeypatch.chdir(proj)
+    session_dir = sessions_dir / "wd_proj_abc123def456" / "session_v2"
+    session_dir.mkdir(parents=True)
+    updated_at = int(datetime.now(UTC).timestamp() * 1000)
+    (session_dir / "state.json").write_text(
+        json.dumps({"cwd": str(proj), "updatedAt": updated_at}), encoding="utf-8"
+    )
+
+    assert kimi.current_session_id_for_cwd(fresh_within_s=30 * 60) == "session_v2"
 
 
 def test_current_session_id_for_cwd_freshness_gate(tmp_path, monkeypatch):

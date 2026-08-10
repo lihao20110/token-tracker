@@ -7,7 +7,7 @@
   `task_started` / `task_complete` 供状态判定。
 - Kimi wire jsonl（`~/.kimi-code/sessions/<wd_*>/<session_*>/agents/main/wire.jsonl`）——
   `turn.prompt`（origin.kind=="user"）是提示词来源；`usage.record` 给模型；
-  `tool.call`/`tool.result` 配对判 pending；项目名取自同目录 state.json 的 workDir。
+  `tool.call`/`tool.result` 配对判 pending；项目名取自同目录 state.json 的 cwd（兼容旧版 workDir）。
 - 心跳 `config.STATUS_FILE`（CC statusline 每帧落盘）——`session_id` + `_received_at`
   判「正在跑」，白拿、零新增开销；Codex Stop hook 的终端定位单独落
   `config.TERMINAL_MAP_FILE`，读取时与 CC status 文件里的映射合并。

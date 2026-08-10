@@ -103,7 +103,7 @@ def parse_epoch_ms(raw: object) -> datetime | None:
 
 
 def kimi_project_from_session_dir(session_dir: Path) -> str:
-    """Kimi 会话目录的 state.json → workDir → 项目名；读不到回退 wd_<name>_<hash> 目录名。
+    """Kimi 会话目录的 state.json → cwd/workDir → 项目名；读不到回退 wd_<name>_<hash> 目录名。
 
     布局：`<kimi_home>/sessions/<wd_*>/<session_*>/`，state.json 在会话目录下。
     """
@@ -112,7 +112,7 @@ def kimi_project_from_session_dir(session_dir: Path) -> str:
             data = json.load(f)
     except (OSError, json.JSONDecodeError):
         data = {}
-    work_dir = data.get("workDir") if isinstance(data, dict) else None
+    work_dir = (data.get("cwd") or data.get("workDir")) if isinstance(data, dict) else None
     if isinstance(work_dir, str) and work_dir:
         return project_from_cwd(work_dir)
     match = re.fullmatch(r"wd_(.+)_[0-9a-f]{6,}", session_dir.parent.name)
