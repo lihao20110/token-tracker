@@ -3,7 +3,8 @@
 数据源与调研结论见本地 sidebar-research/README.md（不入 git）：
 - CC transcript jsonl（`~/.claude/projects/`）——提示词唯一来源；格式官方不承诺稳定，
   全程防御式解析：缺字段/类型不对一律跳过不崩。
-- Codex rollout jsonl（`~/.codex/sessions/`）——`user_message` 事件干净可靠，
+- Codex rollout jsonl（`~/.codex/sessions/`）——兼容旧版 `event_msg/user_message`
+  与新版 `response_item/message`（双写时以 event_msg 为准去重），
   `task_started` / `task_complete` 供状态判定。
 - Kimi wire jsonl（`~/.kimi-code/sessions/<wd_*>/<session_*>/agents/main/wire.jsonl`）——
   `turn.prompt`（origin.kind=="user"）是提示词来源；`usage.record` 给模型；
@@ -60,8 +61,9 @@ _CLAUDE_SKIP_PREFIXES = ("<command-", "<local-command-", "[Request interrupted",
 # （"/compact"、"/cd ~/x"，无任何标记字段）——裸文本按首 token 识别：/命令名（可带
 # 插件:命令 冒号形式与参数）。路径类真提示词（/Users/... 有第二个斜杠）不匹配、不误伤
 _SLASH_COMMAND_RE = re.compile(r"^/[A-Za-z0-9][A-Za-z0-9_-]*(:[A-Za-z0-9_-]+)?(\s|$)")
-# Codex 里包装成 user_message 的注入内容（用户指令模板 / 环境上下文等）
-_CODEX_SKIP_PREFIXES = ("<user_instructions", "<environment_context", "<ide_", "<permissions", "<turn_")
+# Codex 里包装成 user message 的注入内容（用户指令模板 / 环境上下文 / skill / 图片信封等）
+_CODEX_SKIP_PREFIXES = ("# AGENTS.md instructions", "<user_instructions", "<environment_context", "<ide_",
+                        "<permissions", "<turn_", "<skill>", "<image", "</image>", "<recommended_plugins")
 # Kimi 里非「人敲的提示词」的内容前缀（cron 触发信封 / harness 注入 / 命令记录）
 _KIMI_SKIP_PREFIXES = ("<cron-fire", "<system-reminder", "<command-")
 
@@ -122,8 +124,12 @@ class _CodexParseState:
     session_id: str = ""
     project: str = "unknown"
     prompts: list[Prompt] = field(default_factory=list)
+    # 与 prompts 等长逐条对齐：新版 Codex 双写 event_msg/user_message 与
+    # response_item/message，解析完按通道决定去重（见 _parse_codex）。
+    prompt_channels: list[str] = field(default_factory=list)
     pending_task: bool = False
-    last_reply: str = ""
+    last_reply: str = ""           # event_msg/agent_message
+    last_reply_response: str = ""  # response_item assistant（可能是结构化 JSON，仅作回退）
     last_event: datetime | None = None
     branch: str = ""
 
@@ -583,11 +589,20 @@ def _parse_codex(path: Path, max_prompts: int | None) -> _Parsed | None:
             _consume_codex_meta(payload, state)
         elif dtype == "event_msg":
             _consume_codex_event(payload, ts, state)
+        elif dtype == "response_item":
+            _consume_codex_response_item(payload, ts, state)
     if not state.prompts:
         return None
-    prompts = state.prompts if max_prompts is None else state.prompts[-max_prompts:]
+    # 双写文件以 event_msg 为准，剔除 response_item 的孪生副本；event 通道完全没有
+    # 真实提示词（纯新版日志）才保留 response_item 通道，同文真实重复输入不受影响。
+    if "event" in state.prompt_channels:
+        prompts = [p for p, ch in zip(state.prompts, state.prompt_channels, strict=True) if ch == "event"]
+    else:
+        prompts = state.prompts
+    last_reply = state.last_reply or state.last_reply_response
+    prompts = prompts if max_prompts is None else prompts[-max_prompts:]
     return _Parsed(state.session_id or path.stem, state.project, prompts, state.pending_task,
-                   branch=state.branch, next_hint=_hint_text(state.last_reply), last_event=state.last_event)
+                   branch=state.branch, next_hint=_hint_text(last_reply), last_event=state.last_event)
 
 
 def _consume_codex_meta(payload: dict, state: _CodexParseState) -> None:
@@ -606,6 +621,7 @@ def _consume_codex_event(payload: dict, ts: datetime | None, state: _CodexParseS
         text = (payload.get("message") or "").strip()
         if text and not text.startswith(_CODEX_SKIP_PREFIXES):
             state.prompts.append(Prompt(text=text, timestamp=ts))
+            state.prompt_channels.append("event")
     elif event_type == "agent_message":
         reply = payload.get("message") or ""
         if reply.strip():
@@ -614,6 +630,40 @@ def _consume_codex_event(payload: dict, ts: datetime | None, state: _CodexParseS
         state.pending_task = True
     elif event_type in ("task_complete", "turn_aborted"):
         state.pending_task = False
+
+
+def _codex_message_text(content: object, content_type: str) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+    parts = [item.get("text", "").strip() for item in content
+             if isinstance(item, dict) and item.get("type") == content_type]
+    return "\n".join(part for part in parts if part)
+
+
+def _consume_codex_response_item(payload: dict, ts: datetime | None, state: _CodexParseState) -> None:
+    if payload.get("type") != "message":
+        return
+    role = payload.get("role")
+    if role == "user":
+        content = payload.get("content")
+        if isinstance(content, list):
+            parts = [item.get("text", "").strip() for item in content
+                     if isinstance(item, dict) and item.get("type") == "input_text"]
+            text = "\n".join(part for part in parts
+                             if part and not part.startswith(_CODEX_SKIP_PREFIXES))
+        else:
+            text = _codex_message_text(content, "input_text")
+            if text.startswith(_CODEX_SKIP_PREFIXES):
+                text = ""
+        if text:
+            state.prompts.append(Prompt(text=text, timestamp=ts))
+            state.prompt_channels.append("response")
+    elif role == "assistant":
+        reply = _codex_message_text(payload.get("content"), "output_text")
+        if reply:
+            state.last_reply_response = reply
 
 
 # --- Kimi Code ---

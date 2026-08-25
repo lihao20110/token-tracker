@@ -204,6 +204,100 @@ def test_codex_none_max_prompts_keeps_all(tmp_path):
     assert [p.text for p in parsed.prompts] == [f"提示词{i}" for i in range(12)]
 
 
+def test_codex_parse_response_item_messages(tmp_path):
+    rows = [
+        {"timestamp": _iso(60), "type": "session_meta",
+         "payload": {"id": "cx-response-item", "cwd": "/tmp/project"}},
+        {"timestamp": _iso(50), "type": "response_item",
+         "payload": {"type": "message", "role": "user",
+                     "content": [{"type": "input_text", "text": "# AGENTS.md instructions\n注入规范"}]}},
+        {"timestamp": _iso(40), "type": "response_item",
+         "payload": {"type": "message", "role": "user",
+                     "content": [{"type": "input_text", "text": "<environment_context>注入环境</environment_context>"}]}},
+        {"timestamp": _iso(30), "type": "response_item",
+         "payload": {"type": "message", "role": "user",
+                     "content": [{"type": "input_text", "text": "<skill>注入 skill</skill>"}]}},
+        {"timestamp": _iso(20), "type": "response_item",
+         "payload": {"type": "message", "role": "user", "content": [
+             {"type": "input_text", "text": "<image name=[Image #1]>"},
+             {"type": "input_image", "image_url": "data:image/png;base64,AA=="},
+             {"type": "input_text", "text": "</image>"},
+             {"type": "input_text", "text": "解释这张截图"},
+         ]}},
+        {"timestamp": _iso(10), "type": "response_item",
+         "payload": {"type": "message", "role": "assistant",
+                     "content": [{"type": "output_text", "text": "请确认是否继续修复？"}]}},
+    ]
+
+    parsed = _parse_codex(_write_jsonl(tmp_path / "rollout.jsonl", rows), 5)
+
+    assert parsed is not None
+    assert parsed.session_id == "cx-response-item"
+    assert [p.text for p in parsed.prompts] == ["解释这张截图"]
+    assert parsed.next_hint == "请确认是否继续修复？"
+
+
+def test_codex_parse_dual_written_channels_dedupes_by_event(tmp_path):
+    """双写文件（event_msg + response_item 各一份）以 event_msg 为准，孪生副本不重复；
+    response_item 里 assistant 的结构化 JSON 不覆盖 event_msg 的正常回复。"""
+    rows = [
+        {"timestamp": _iso(70), "type": "session_meta",
+         "payload": {"id": "cx-dual", "cwd": "/tmp/project"}},
+        {"timestamp": _iso(60), "type": "response_item",
+         "payload": {"type": "message", "role": "user",
+                     "content": [{"type": "input_text", "text": "<recommended_plugins> 注入</recommended_plugins>"},
+                                 {"type": "input_text", "text": "# AGENTS.md instructions\n注入规范"}]}},
+        {"timestamp": _iso(50), "type": "response_item",
+         "payload": {"type": "message", "role": "user",
+                     "content": [{"type": "input_text", "text": "你好"}]}},
+        {"timestamp": _iso(49), "type": "event_msg",
+         "payload": {"type": "user_message", "message": "你好"}},
+        {"timestamp": _iso(40), "type": "response_item",
+         "payload": {"type": "message", "role": "user",
+                     "content": [{"type": "input_text", "text": "什么是 4k"}]}},
+        {"timestamp": _iso(39), "type": "event_msg",
+         "payload": {"type": "user_message", "message": "什么是 4k"}},
+        {"timestamp": _iso(30), "type": "event_msg",
+         "payload": {"type": "agent_message", "message": "4K 是分辨率。"}},
+        {"timestamp": _iso(20), "type": "response_item",
+         "payload": {"type": "message", "role": "assistant",
+                     "content": [{"type": "output_text", "text": '{"risk_level":"low"}'}]}},
+    ]
+
+    parsed = _parse_codex(_write_jsonl(tmp_path / "rollout.jsonl", rows), 5)
+
+    assert parsed is not None
+    assert [p.text for p in parsed.prompts] == ["你好", "什么是 4k"]
+    assert parsed.next_hint == "4K 是分辨率。"
+
+
+def test_codex_parse_response_item_only_keeps_real_repeats(tmp_path):
+    """纯新版日志（无 event_msg/user_message）保留 response_item 通道，
+    同文真实重复输入不去重，注入前缀过滤，next_hint 回退 response_item 回复。"""
+    rows = [
+        {"timestamp": _iso(50), "type": "session_meta",
+         "payload": {"id": "cx-ri-only", "cwd": "/tmp/project"}},
+        {"timestamp": _iso(40), "type": "response_item",
+         "payload": {"type": "message", "role": "user",
+                     "content": [{"type": "input_text", "text": "<recommended_plugins> 注入</recommended_plugins>"}]}},
+        *[
+            {"timestamp": _iso(30 - i), "type": "response_item",
+             "payload": {"type": "message", "role": "user",
+                         "content": [{"type": "input_text", "text": "继续做下一步"}]}}
+            for i in range(3)
+        ],
+        {"timestamp": _iso(1), "type": "response_item",
+         "payload": {"type": "message", "role": "assistant",
+                     "content": [{"type": "output_text", "text": "已完成，是否提交？"}]}},
+    ]
+
+    parsed = _parse_codex(_write_jsonl(tmp_path / "rollout.jsonl", rows), None)
+
+    assert parsed is not None
+    assert [p.text for p in parsed.prompts] == ["继续做下一步"] * 3
+    assert parsed.next_hint == "已完成，是否提交？"
+
+
 # --- 扫描：窗口过滤 + 排序 + 缓存 ---
 
 def _make_claude_base(tmp_path: Path) -> Path:
