@@ -24,7 +24,11 @@ _OSASCRIPT = "/usr/bin/osascript"
 _SPLIT_OK = "tt_sidebar_split_ok"
 _SPLIT_OK_RAW = "tt_sidebar_split_ok_raw"
 _PROCESS_TIMEOUT = 10.0
+_PROBE_TIMEOUT = 5.0
 _MIN_GHOSTTY_VERSION = "1.3"
+# 探针只取 version 属性，仍需编译期加载 Ghostty 术语字典，沙箱下同样报 -2741，
+# 因此可在跑整段脚本前精确区分「Codex 沙箱读不到字典」与「版本过低」。
+_PROBE_SCRIPT = 'tell application "Ghostty" to get version'
 
 # 动态命令、工作目录与列数文件只通过 argv 进入脚本，不插值到 AppleScript 源码。
 # 注意 `before` 是 AppleScript 保留字，循环变量命名须避开。
@@ -170,6 +174,49 @@ def _osascript_argv(command: str, cwd: str, cols_file: str) -> list[str]:
     return [_OSASCRIPT, "-e", _APPLESCRIPT, "--", command, cwd, cols_file]
 
 
+def _version_tuple(version: str) -> tuple[int, ...] | None:
+    """解析 ``1.3.1`` 形式版本号；解析不出返回 ``None``（按未知处理，不阻断）。"""
+    try:
+        return tuple(int(piece) for piece in version.strip().split()[0].split("."))
+    except (ValueError, IndexError):
+        return None
+
+
+def _probe_ghostty() -> tuple[bool, str]:
+    """分屏前置探针：跑整段脚本前用最小脚本区分沙箱 / 版本过低 / 未授权。
+
+    Codex 沙箱会让整段脚本在编译期死于 -2741，脚本内的版本检查根本没机会执行，
+    只能把「沙箱」与「版本低」混报；探针先把两者拆开，给出可行动的准确文案。
+    探针自身失败（osascript 不存在 / 超时）不阻断主流程，交给主脚本报原始错误。
+    """
+    try:
+        result = subprocess.run(
+            [_OSASCRIPT, "-e", _PROBE_SCRIPT],
+            capture_output=True,
+            text=True,
+            timeout=_PROBE_TIMEOUT,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return True, ""
+    output = result.stderr or result.stdout
+    if result.returncode != 0:
+        lowered = output.lower()
+        if "-2741" in output or "expected end of line but found identifier" in lowered:
+            return False, (
+                "Ghostty 分屏失败：当前命令运行在 Codex 沙箱中，osascript 无法读取 Ghostty 的 "
+                "AppleScript 术语字典。请以沙箱外权限（require_escalated）重跑 $tt-sidebar。"
+            )
+        return False, _failure_message(output)
+    version = _version_tuple(result.stdout)
+    minimum = _version_tuple(_MIN_GHOSTTY_VERSION)
+    if version is not None and minimum is not None and version < minimum:
+        return False, (
+            f"Ghostty 分屏失败：当前版本 {result.stdout.strip()}，AppleScript 分屏需要 Ghostty "
+            f"≥ {_MIN_GHOSTTY_VERSION}.0，请升级后重试。"
+        )
+    return True, ""
+
+
 def _failure_message(output: str) -> str:
     lowered = output.lower()
     if "tt_sidebar_ghostty_version" in output:
@@ -200,6 +247,9 @@ def _failure_message(output: str) -> str:
 def _run_split(command: str, cwd: str) -> tuple[bool, str]:
     if sys.platform != "darwin":
         return False, "Ghostty 自动分屏仅支持 macOS（Linux 下请在 tmux 中使用 $tt-sidebar）。"
+    ok, message = _probe_ghostty()
+    if not ok:
+        return False, message
     token = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
     tmp_dir = tempfile.gettempdir()
     cols_file = os.path.join(tmp_dir, f"tt-ghostty-cols-{token}.txt")

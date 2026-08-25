@@ -114,7 +114,7 @@ def test_run_split_explains_automation_denial(monkeypatch):
     assert "Ghostty" in message
 
 
-def test_run_split_explains_sandbox_dictionary_denial(monkeypatch):
+def test_run_split_probe_explains_codex_sandbox(monkeypatch):
     completed = subprocess.CompletedProcess(
         ["osascript"],
         1,
@@ -122,11 +122,64 @@ def test_run_split_explains_sandbox_dictionary_denial(monkeypatch):
         "execution error: Expected end of line but found identifier. (-2741)\n",
     )
     monkeypatch.setattr(ghostty_split.sys, "platform", "darwin")
-    monkeypatch.setattr(ghostty_split.subprocess, "run", MagicMock(return_value=completed))
+    run = MagicMock(return_value=completed)
+    monkeypatch.setattr(ghostty_split.subprocess, "run", run)
 
     ok, message = ghostty_split._run_split("exec sidebar", "/cwd")
 
     assert not ok
+    assert "Codex 沙箱" in message
+    assert "require_escalated" in message
+    assert run.call_count == 1  # 探针即失败，不再跑整段脚本
+
+
+def test_run_split_probe_reports_precise_version(monkeypatch):
+    completed = subprocess.CompletedProcess(["osascript"], 0, "1.2.9\n", "")
+    monkeypatch.setattr(ghostty_split.sys, "platform", "darwin")
+    run = MagicMock(return_value=completed)
+    monkeypatch.setattr(ghostty_split.subprocess, "run", run)
+
+    ok, message = ghostty_split._run_split("exec sidebar", "/cwd")
+
+    assert not ok
+    assert "1.2.9" in message
+    assert "1.3.0" in message
+    assert "升级" in message
+    assert run.call_count == 1
+
+
+def test_run_split_probe_passes_current_version(monkeypatch, tmp_path):
+    monkeypatch.setattr(ghostty_split.tempfile, "gettempdir", lambda: str(tmp_path))
+    probe = subprocess.CompletedProcess(["osascript"], 0, "1.3.1\n", "")
+    split = subprocess.CompletedProcess(["osascript"], 0, "tt_sidebar_split_ok\n", "")
+    run = MagicMock(side_effect=[probe, split])
+    monkeypatch.setattr(ghostty_split.sys, "platform", "darwin")
+    monkeypatch.setattr(ghostty_split.subprocess, "run", run)
+
+    assert ghostty_split._run_split("exec sidebar", "/cwd") == (True, "tt_sidebar_split_ok")
+    assert run.call_count == 2
+
+
+def test_probe_failure_does_not_block_split(monkeypatch, tmp_path):
+    monkeypatch.setattr(ghostty_split.tempfile, "gettempdir", lambda: str(tmp_path))
+    split = subprocess.CompletedProcess(["osascript"], 0, "tt_sidebar_split_ok\n", "")
+    run = MagicMock(side_effect=[subprocess.TimeoutExpired(["osascript"], 5.0), split])
+    monkeypatch.setattr(ghostty_split.sys, "platform", "darwin")
+    monkeypatch.setattr(ghostty_split.subprocess, "run", run)
+
+    assert ghostty_split._run_split("exec sidebar", "/cwd") == (True, "tt_sidebar_split_ok")
+
+
+def test_version_tuple_parses_dotted_versions():
+    assert ghostty_split._version_tuple("1.3.1\n") == (1, 3, 1)
+    assert ghostty_split._version_tuple("1.3.1") > ghostty_split._version_tuple("1.3")
+    assert ghostty_split._version_tuple("1.2.9") < ghostty_split._version_tuple("1.3")
+    assert ghostty_split._version_tuple("tt_sidebar_split_ok") is None
+
+
+def test_failure_message_fallback_covers_runtime_dictionary_denial():
+    message = ghostty_split._failure_message("execution error: Expected end of line but found identifier. (-2741)\n")
+
     assert "沙箱外" in message
     assert "1.3.0" in message
 
