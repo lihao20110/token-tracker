@@ -61,9 +61,12 @@ _CLAUDE_SKIP_PREFIXES = ("<command-", "<local-command-", "[Request interrupted",
 # （"/compact"、"/cd ~/x"，无任何标记字段）——裸文本按首 token 识别：/命令名（可带
 # 插件:命令 冒号形式与参数）。路径类真提示词（/Users/... 有第二个斜杠）不匹配、不误伤
 _SLASH_COMMAND_RE = re.compile(r"^/[A-Za-z0-9][A-Za-z0-9_-]*(:[A-Za-z0-9_-]+)?(\s|$)")
-# Codex 里包装成 user message 的注入内容（用户指令模板 / 环境上下文 / skill / 图片信封等）
+# Codex 里包装成 user message 的注入内容（用户指令模板 / 环境上下文 / skill / 图片信封 /
+# goal 模式内部上下文 / 自动审批工具注入的 transcript 历史等）
 _CODEX_SKIP_PREFIXES = ("# AGENTS.md instructions", "<user_instructions", "<environment_context", "<ide_",
-                        "<permissions", "<turn_", "<skill>", "<image", "</image>", "<recommended_plugins")
+                        "<permissions", "<turn_", "<skill>", "<image", "</image>", "<recommended_plugins",
+                        "<codex_internal_context", "The following is the Codex agent history",
+                        ">>> TRANSCRIPT")
 # Kimi 里非「人敲的提示词」的内容前缀（cron 触发信封 / harness 注入 / 命令记录）
 _KIMI_SKIP_PREFIXES = ("<cron-fire", "<system-reminder", "<command-")
 
@@ -838,7 +841,10 @@ def _hint_text(reply: str) -> str:
     """句子打分精简，只看回复的**最后一个有效段落**（空行分段，主人定）：收尾段才是
     「下一步」所在，整量分析会把中段大纲/列表也抓进来。结尾段清洗后为空（纯表格等）
     向上回退。段内切句取正分句（问句/建议/选项行）按原顺序保留末尾至多
-    _HINT_PICK_LINES 个；全无信号（纯汇报）回退最后一个有效行。"""
+    _HINT_PICK_LINES 个；全无信号（纯汇报）回退最后一个有效行。
+    结构化输出（自动审批工具最终回复就是 raw JSON）不是给人看的「下一步」，直接空。"""
+    if reply.strip().startswith(("{", "[")):
+        return ""
     cleaned: list[str] = []
     for para in reversed(re.split(r"\n\s*\n", _strip_code_blocks(reply))):
         cleaned = _clean_reply_lines(para)

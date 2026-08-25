@@ -298,6 +298,37 @@ def test_codex_parse_response_item_only_keeps_real_repeats(tmp_path):
     assert parsed.next_hint == "已完成，是否提交？"
 
 
+def test_codex_parse_filters_approval_tool_and_goal_injections(tmp_path):
+    """自动审批工具注入的 transcript 历史与 goal 模式内部上下文不进提示词列表。"""
+    rows = [
+        {"timestamp": _iso(50), "type": "session_meta",
+         "payload": {"id": "cx-inject", "cwd": "/tmp/project"}},
+        {"timestamp": _iso(40), "type": "event_msg",
+         "payload": {"type": "user_message",
+                     "message": "The following is the Codex agent history whose request action you are approving..."}},
+        {"timestamp": _iso(30), "type": "event_msg",
+         "payload": {"type": "user_message",
+                     "message": "<codex_internal_context source=\"goal\"> Continue working toward the act..."}},
+        {"timestamp": _iso(25), "type": "event_msg",
+         "payload": {"type": "user_message",
+                     "message": ">>> TRANSCRIPT DELTA START [62] tool exec result: Script completed..."}},
+        {"timestamp": _iso(20), "type": "event_msg",
+         "payload": {"type": "user_message", "message": "真实提示词"}},
+    ]
+
+    parsed = _parse_codex(_write_jsonl(tmp_path / "rollout.jsonl", rows), 5)
+
+    assert parsed is not None
+    assert [p.text for p in parsed.prompts] == ["真实提示词"]
+
+
+def test_hint_text_returns_empty_for_raw_json_reply():
+    """结构化输出（自动审批 JSON）不作「下一步」提示。"""
+    assert sidebar._hint_text('{"risk_level":"low","outcome":"allow"}') == ""
+    assert sidebar._hint_text('["a", "b"]') == ""
+    assert sidebar._hint_text("修复已完成，是否提交？") == "修复已完成，是否提交？"
+
+
 # --- 扫描：窗口过滤 + 排序 + 缓存 ---
 
 def _make_claude_base(tmp_path: Path) -> Path:
