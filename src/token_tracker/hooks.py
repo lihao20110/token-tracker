@@ -1,3 +1,4 @@
+import ctypes
 import json
 import os
 import re
@@ -156,8 +157,27 @@ def _installed_kimi_statusline_version() -> str | None:
     return None
 
 
+def _kimi_cmd_path(path: str) -> str:
+    """cmd /d /s /c 下单个路径的安全形态：反斜杠转正斜杠；含空格则换 8.3 短路径（引号免疫）。
+    短路径不可用时（卷未启用 8.3 / 非 Windows）原样返回。"""
+    path = path.replace("\\", "/")
+    if " " in path and os.name == "nt":
+        try:
+            buf = ctypes.create_unicode_buffer(260)
+            if ctypes.windll.kernel32.GetShortPathNameW(path.replace("/", "\\"), buf, 260):  # type: ignore[attr-defined]
+                path = buf.value.replace("\\", "/")
+        except (AttributeError, OSError):
+            pass
+    return path
+
+
 def _kimi_statusline_command(python: str | None = None) -> str:
-    return _build_cc_command(python or sys.executable or "python3", KIMI_STATUSLINE_HOOK_PATH)
+    """Kimi 在 Windows 走 cmd /d /s /c 执行（与 CC 的 Git Bash/sh 不同）：
+    双引号会被 cmd 原样视作程序名的一部分，整条命令静默失败，状态栏回退内置 footer。"""
+    python = python or sys.executable or "python3"
+    if os.name == "nt":
+        return f"{_kimi_cmd_path(python)} {_kimi_cmd_path(KIMI_STATUSLINE_HOOK_PATH)}"
+    return f'"{python}" "{KIMI_STATUSLINE_HOOK_PATH}"'
 
 
 def kimi_statusline_active() -> bool:

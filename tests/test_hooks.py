@@ -923,6 +923,51 @@ def test_build_cc_command_unix_always_quoted(monkeypatch):
     assert "John Doe" in cmd  # 含空格路径被引号包住、能正确执行
 
 
+def test_kimi_statusline_command_windows_no_quotes(monkeypatch):
+    # Kimi 在 Windows 走 cmd /d /s /c（非 sh）：双引号会被 cmd 视作程序名的一部分，
+    # 整条命令静默失败、状态栏回退内置 footer——必须裸拼接 + 正斜杠。
+    monkeypatch.setattr(hooks.os, "name", "nt")
+    monkeypatch.setattr(hooks, "KIMI_STATUSLINE_HOOK_PATH",
+                        r"C:\Users\X\.config\token-tracker\kimi-statusline.py")
+    cmd = hooks._kimi_statusline_command(r"C:\Users\X\pipx\venvs\token-tracker\Scripts\python.exe")
+    assert cmd == ("C:/Users/X/pipx/venvs/token-tracker/Scripts/python.exe"
+                   " C:/Users/X/.config/token-tracker/kimi-statusline.py")
+    assert '"' not in cmd and "\\" not in cmd
+
+
+def test_kimi_statusline_command_unix_quoted(monkeypatch):
+    # 非 Windows 走 sh -c，维持引号写法（防路径含空格断词）。
+    monkeypatch.setattr(hooks.os, "name", "posix")
+    monkeypatch.setattr(hooks, "KIMI_STATUSLINE_HOOK_PATH",
+                        "/Users/X/.config/token-tracker/kimi-statusline.py")
+    cmd = hooks._kimi_statusline_command("/usr/bin/python3")
+    assert cmd == '"/usr/bin/python3" "/Users/X/.config/token-tracker/kimi-statusline.py"'
+
+
+def test_kimi_cmd_path_space_without_windll(monkeypatch):
+    # 含空格路径：windll 不可用（如非 Windows 测试环境）时原样返回，仅转正斜杠。
+    monkeypatch.setattr(hooks.os, "name", "nt")
+    assert hooks._kimi_cmd_path(r"C:\Users\John Doe\x.py") == "C:/Users/John Doe/x.py"
+
+
+def test_kimi_cmd_path_space_uses_short_path(monkeypatch):
+    # 含空格路径：GetShortPathNameW 可用时换 8.3 短路径，免疫引号问题。
+    import ctypes
+    import types
+
+    class _FakeKernel32:
+        @staticmethod
+        def GetShortPathNameW(path, buf, size):
+            short = r"C:\Users\JOHNDO~1\x.py"
+            buf.value = short
+            return len(short)
+
+    monkeypatch.setattr(hooks.os, "name", "nt")
+    monkeypatch.setattr(ctypes, "windll",
+                        types.SimpleNamespace(kernel32=_FakeKernel32), raising=False)
+    assert hooks._kimi_cmd_path(r"C:\Users\John Doe\x.py") == "C:/Users/JOHNDO~1/x.py"
+
+
 def test_cc_command_outdated_detects_legacy_format(monkeypatch):
     # 旧格式（裸拼接、无引号）应被检测为过时；新格式不动。
     monkeypatch.setattr(hooks.os, "name", "posix")

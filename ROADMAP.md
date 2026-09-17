@@ -162,6 +162,8 @@
 
 ## 最近验证
 
+- **2026-09-17 20:20**：**修复 Windows 下 Kimi 状态栏静默失败（cmd /s 引号问题）**。根因：`_kimi_statusline_command()` 复用 CC 的 `"{python}" "{script}"` 引号写法，而 Kimi Code 在 Windows 经 `cmd.exe /d /s /c` 执行（已在 kimi 0.43.1 二进制中核实 spawn 参数），双引号被视作程序名一部分导致命令失败、回退内置 footer，且 `update_hook()` 会覆盖用户手工修复。修复：Windows 下改裸拼接 + 正斜杠，含空格路径经 `GetShortPathNameW` 转 8.3 短路径（不可用时原样返回）；`ctypes` 提为模块顶层导入；非 Windows 及 CC / Codex 侧维持引号写法不动。新增 4 项回归（Windows 无引号形态、Unix 引号形态、短路径命中与 windll 缺失回退）。完整 pytest 与 `LANG=C LC_ALL=C TERM=dumb` 各 **420 passed**，Ruff 全过、mypy 41 个源文件无错误、`git diff --check` 通过。cmd 实际执行行为未在真机 Windows 复测（修复形态与报告者本地验证一致）；Codex 端 `_codex_statusline_command()` 同样复用 `_build_cc_command()`，Windows 下是否存在同类问题待验证。
+
 - **2026-09-10 00:09**：**GPT 命名空间定价修复**。先复现 `chatgpt/`、`openai/` 前缀导致定价归零，再补最小解析规则；新增 21 项回归覆盖两个前缀、Sol / Astra、日期后缀、272K 上下界、完整 ID 报价优先、缓存兜底后新增精确价，以及未知／嵌套／空前缀边界。完整 pytest 和英文 dumb terminal 各 416 passed，Ruff 全过、mypy 41 个源文件无错误、`git diff --check` 通过。只读加载本机现有价格缓存，确认 `chatgpt/gpt-5.6-sol` 命中 `gpt-5.6-sol`；未修改用户级安装或缓存。
 
 - **2026-09-09 19:55**：**0.5.7 打包、发布与远端回验完成**。版本与锁文件一致；完整测试和英文 dumb terminal 各 395 passed，Ruff / mypy / `uv lock --check` / diff 检查通过。sdist / wheel 经 Twine 校验，包文件与发布提交一致，未混入本地品牌素材或临时文件；远端 main 和 tag 目标已核对。PyPI 两份产物元数据及下载字节的 SHA-256 与本地一致；`uvx --no-cache --index-url https://pypi.org/simple --from token-tracker==0.5.7 tt --version` 返回 0.5.7。构建仅有既存 setuptools license 弃用提示；GitHub CI workflow 为 active，但截至检查时未查询到本次发布提交的 Actions 运行记录，不将其标为远端 CI 通过。
