@@ -12,6 +12,7 @@ MODEL_SHORT = {
     "claude-fable-5-1": "Fable 5.1",
     "claude-fable-5": "Fable 5",
     "claude-mythos-5": "Mythos 5",
+    "claude-opus-5-5": "Opus 5.5",
     "claude-opus-5": "Opus 5",
     "claude-opus-4-6": "Opus 4.6",
     "claude-opus-4-7": "Opus 4.7",
@@ -22,6 +23,8 @@ MODEL_SHORT = {
     "claude-haiku-4-5-20251001": "Haiku 4.5",
     "claude-haiku": "Haiku",
     "gpt-6-astra": "GPT-6 Astra",
+    "gpt-6-sol": "GPT-6 Sol",
+    "gpt-6-luna": "GPT-6 Luna",
     # OpenAI GPT-5.6 系列（sol/terra/luna 三档）
     "gpt-5.6-sol": "GPT-5.6 Sol",
     "gpt-5.6-terra": "GPT-5.6 Terra",
@@ -56,6 +59,7 @@ MODEL_SHORT = {
     "doubao-seed-2.1-pro": "Doubao 2.1 Pro",
     "doubao-1-5-pro-32k": "Doubao Pro 32k",
     "doubao-1-5-pro-256k": "Doubao Pro 256k",
+    "deepseek-flash": "DeepSeek V4.1F",
     "deepseek-v4-flash": "DeepSeek V4F",
     "deepseek-v4-pro": "DeepSeek V4P",
     "deepseek-v4-flash-vision-exp": "DeepSeek V4 Vision",
@@ -78,11 +82,13 @@ MODEL_SHORT = {
     "gemini-3.5-flash": "Gemini 3.5 Flash",
     "gemini-3.6-flash": "Gemini 3.6 Flash",
     "gemini-3.7-pro": "Gemini 3.7 Pro",
+    "gemini-3.8-flash": "Gemini 3.8 Flash",
     "gemini-2.0-flash": "Gemini 2.0 Flash",
     # xAI Grok
     "grok-4.3": "Grok 4.3",
     "grok-4.5": "Grok 4.5",
     "grok-4.6": "Grok 4.6",
+    "grok-4.7": "Grok 4.7",
     "grok-build-0.1": "Grok Build",
     "grok-code-fast-1": "Grok Code",
 }

@@ -24,7 +24,7 @@ _warned_insecure = False
 # 未知的新模型按系列退回最新已知价（这些 key 由 _fallback_pricing 保证存在）。
 # codex- 兜底覆盖 Codex 内部虚拟 model（如 codex-auto-review，stop-time auto-review gate 用）
 _FAMILY_FALLBACK = (
-    ("claude-opus", "claude-opus-4-8"),
+    ("claude-opus", "claude-opus-5-5"),
     ("claude-sonnet", "claude-sonnet-5"),
     ("claude-haiku", "claude-haiku-4-5-20251001"),
     ("claude-fable", "claude-fable-5-1"),
@@ -64,10 +64,20 @@ _OFFICIAL_PROVIDER_PREFIXES = (
 )
 
 _DEEPSEEK_NEW_PRICING_AT = datetime(2026, 8, 16, 16, 0, tzinfo=UTC)
-_DEEPSEEK_V4_PRICING_KEYS = {
+_DEEPSEEK_V41_FLASH_AT = datetime(2026, 9, 10, 4, 0, tzinfo=UTC)
+_DEEPSEEK_V41_FLASH_MODELS = {
+    "deepseek-flash",
     "deepseek-v4-flash",
+    "deepseek-v4-flash-vision-exp",
+}
+_DEEPSEEK_V4_PRICING_KEYS = {
+    "deepseek-flash",
+    "deepseek/deepseek-flash",
+    "deepseek-v4-flash",
+    "deepseek/deepseek-v4-flash",
     "deepseek-v4-pro",
     "deepseek-v4-flash-vision-exp",
+    "deepseek/deepseek-v4-flash-vision-exp",
     "deepseek-chat",
     "deepseek-reasoner",
 }
@@ -209,7 +219,8 @@ def _deepseek_pricing(model: str, timestamp: datetime) -> dict:
     """DeepSeek 官方直营价：新价生效后仅工作日 UTC 两段为峰值，周末全天谷价。"""
     ts = timestamp if timestamp.tzinfo is not None else timestamp.replace(tzinfo=UTC)
     ts = ts.astimezone(UTC)
-    pro = model.lower().startswith("deepseek-v4-pro")
+    ml = model.lower().removeprefix("deepseek/")
+    pro = ml.startswith("deepseek-v4-pro")
     if ts < _DEEPSEEK_NEW_PRICING_AT:
         info = _cny(3, 6, 0.025) if pro else _cny(1, 2, 0.02)
         info["cache_creation_input_token_cost"] = info["input_cost_per_token"]
@@ -218,6 +229,9 @@ def _deepseek_pricing(model: str, timestamp: datetime) -> dict:
     peak = ts.weekday() < 5 and (1 <= ts.hour < 4 or 6 <= ts.hour < 10)
     if pro:
         info = _cny(9, 27, 0.3) if peak else _cny(4.5, 13.5, 0.15)
+    elif ml in _DEEPSEEK_V41_FLASH_MODELS and ts >= _DEEPSEEK_V41_FLASH_AT:
+        # V4 Flash 旧 ID 自此路由到 V4.1 Flash；V4 Pro 仍按原价提供。
+        info = _cny(2, 8, 0.04) if peak else _cny(1, 4, 0.02)
     else:
         info = _cny(3, 9, 0.1) if peak else _cny(1.5, 4.5, 0.05)
     info["cache_creation_input_token_cost"] = info["input_cost_per_token"]
@@ -418,6 +432,15 @@ def _fallback_pricing() -> dict:
         "claude-fable-5-1": {**_FABLE_PRICING, "cache_read_input_token_cost": 0.25e-6},
         "claude-fable-5": _FABLE_PRICING,
         "claude-mythos-5": _FABLE_PRICING,
+        # https://platform.claude.com/docs/en/models/opus-5-5/overview
+        # Opus 5.5 降价；Opus 5 精确 key 保留历史价，不受系列兜底更新影响。
+        "claude-opus-5-5": {
+            "input_cost_per_token": 4e-6,
+            "output_cost_per_token": 20e-6,
+            "cache_creation_input_token_cost": 5e-6,
+            "cache_read_input_token_cost": 0.2e-6,
+        },
+        "claude-opus-5": _OPUS_PRICING,
         "claude-opus-4-8": _OPUS_PRICING,
         "claude-opus-4-7": _OPUS_PRICING,
         "claude-opus-4-6": _OPUS_PRICING,
@@ -452,6 +475,28 @@ def _fallback_pricing() -> dict:
             "output_cost_per_token_above_272k_tokens": 75e-6,
             "cache_creation_input_token_cost_above_272k_tokens": 25e-6,
             "cache_read_input_token_cost_above_272k_tokens": 2e-6,
+        },
+        # https://developers.openai.com/api/docs/models/gpt-6-sol
+        "gpt-6-sol": {
+            "input_cost_per_token": 2e-6,
+            "output_cost_per_token": 10e-6,
+            "cache_creation_input_token_cost": 2.5e-6,
+            "cache_read_input_token_cost": 0.2e-6,
+            "input_cost_per_token_above_272k_tokens": 4e-6,
+            "output_cost_per_token_above_272k_tokens": 15e-6,
+            "cache_creation_input_token_cost_above_272k_tokens": 5e-6,
+            "cache_read_input_token_cost_above_272k_tokens": 0.4e-6,
+        },
+        # https://developers.openai.com/api/docs/models/gpt-6-luna
+        "gpt-6-luna": {
+            "input_cost_per_token": 0.1e-6,
+            "output_cost_per_token": 0.5e-6,
+            "cache_creation_input_token_cost": 0.125e-6,
+            "cache_read_input_token_cost": 0.01e-6,
+            "input_cost_per_token_above_272k_tokens": 0.2e-6,
+            "output_cost_per_token_above_272k_tokens": 0.75e-6,
+            "cache_creation_input_token_cost_above_272k_tokens": 0.25e-6,
+            "cache_read_input_token_cost_above_272k_tokens": 0.02e-6,
         },
         "gpt-5": {
             "input_cost_per_token": 1.25e-6,
@@ -564,8 +609,10 @@ def _fallback_pricing() -> dict:
         "doubao-seed-2.1-pro": _cny(6, 30, 1.2),
         "doubao-1-5-pro-32k": _cny(0.8, 2, 0.16),
         "doubao-1-5-pro-256k": _cny(5, 9),
-        # DeepSeek：表内放新价高峰档作静态元数据；calculate_cost 按生效时间、工作日与峰谷时段动态覆盖。
+        # DeepSeek：表内放当前高峰档作静态元数据；calculate_cost 按生效时间、工作日与峰谷时段动态覆盖。
         # 周一至周五北京时间 9:00-12:00 / 14:00-18:00 为高峰，周末全天与其余时段均为谷价。
+        # https://api-docs.deepseek.com/quick_start/pricing/
+        "deepseek-flash": _cny(2, 8, 0.04),
         "deepseek-v4-flash": _cny(3, 9, 0.1),
         "deepseek-v4-pro": _cny(9, 27, 0.3),
         "deepseek-v4-flash-vision-exp": _cny(3, 9, 0.1),
@@ -611,6 +658,14 @@ def _fallback_pricing() -> dict:
             "cache_read_input_token_cost_above_200k_tokens": 0.6e-6,
         },
         "grok-4.6": {
+            **_usd(2.0, 6.0, 0.5),
+            "long_context_threshold_inclusive": True,
+            "input_cost_per_token_above_200k_tokens": 4e-6,
+            "output_cost_per_token_above_200k_tokens": 12e-6,
+            "cache_read_input_token_cost_above_200k_tokens": 1e-6,
+        },
+        # https://docs.x.ai/developers/models
+        "grok-4.7": {
             **_usd(2.0, 6.0, 0.5),
             "long_context_threshold_inclusive": True,
             "input_cost_per_token_above_200k_tokens": 4e-6,

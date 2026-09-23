@@ -111,6 +111,7 @@ def test_fallback_pricing_includes_openai_models():
     pricing = cost._fallback_pricing()
     for k in (
         "gpt-5", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+        "gpt-6-sol", "gpt-6-luna",
         "gpt-5-codex", "gpt-5-mini", "gpt-5-nano", "gpt-5-pro", "codex-mini-latest",
     ):
         assert k in pricing, f"fallback pricing missing {k}"
@@ -185,7 +186,10 @@ def test_astra_missing_request_usage_uses_base_price(monkeypatch, segments):
 
 def test_gpt56_and_opus5_have_short_names():
     from token_tracker.ui.format import MODEL_SHORT
-    for k in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "claude-opus-5"):
+    for k in (
+        "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+        "gpt-6-sol", "gpt-6-luna", "claude-opus-5", "claude-opus-5-5",
+    ):
         assert k in MODEL_SHORT, f"MODEL_SHORT missing {k}"
 
 
@@ -196,6 +200,36 @@ def test_astra_context_boundary_includes_both_cache_buckets(monkeypatch, model, 
     entry = make_entry(
         model=model, input_tokens=100_000 + extra_input, output_tokens=2_000,
         cache_creation_tokens=32_000, cache_read_tokens=140_000,
+    )
+    assert cost.calculate_cost(entry) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("model, base_cost, long_cost", [
+    ("gpt-6-sol", 0.328, 0.646004),
+    ("gpt-6-luna", 0.0164, 0.0323002),
+])
+def test_gpt6_sol_luna_context_boundary(monkeypatch, model, base_cost, long_cost):
+    monkeypatch.setattr(cost, "_pricing", cost._fallback_pricing())
+    usage = dict(
+        output_tokens=2_000, cache_creation_tokens=32_000, cache_read_tokens=140_000,
+    )
+    at_boundary = make_entry(model=model, input_tokens=100_000, **usage)
+    above_boundary = make_entry(model=model, input_tokens=100_001, **usage)
+    assert cost.calculate_cost(at_boundary) == pytest.approx(base_cost)
+    assert cost.calculate_cost(above_boundary) == pytest.approx(long_cost)
+
+
+@pytest.mark.parametrize("model, expected", [
+    ("claude-opus-5-5", 29.2),
+    ("claude-opus-5-5-20260922", 29.2),
+    ("claude-opus-5", 36.75),
+    ("claude-opus-5-20260724", 36.75),
+])
+def test_opus55_preserves_opus5_historical_price(monkeypatch, model, expected):
+    monkeypatch.setattr(cost, "_pricing", cost._fallback_pricing())
+    entry = make_entry(
+        model=model, input_tokens=1_000_000, output_tokens=1_000_000,
+        cache_creation_tokens=1_000_000, cache_read_tokens=1_000_000,
     )
     assert cost.calculate_cost(entry) == pytest.approx(expected)
 
@@ -216,11 +250,19 @@ def test_fable51_cache_discount_preserves_old_models(monkeypatch, model, expecte
     assert cost.calculate_cost(entry) == pytest.approx(expected)
 
 
-@pytest.mark.parametrize("model, expected", [("gpt-6-astra", 0.001), ("claude-fable-5-1", 0.00025)])
+@pytest.mark.parametrize("model, expected", [
+    ("gpt-6-astra", 0.001), ("claude-fable-5-1", 0.00025),
+    ("gpt-6-sol", 0.0002), ("gpt-6-luna", 0.00001),
+    ("claude-opus-5-5", 0.0002), ("grok-4.7", 0.0005),
+])
 @pytest.mark.parametrize("stale", [False, True])
 def test_new_models_price_with_old_cache_and_no_network(tmp_path, monkeypatch, model, expected, stale):
     cache = tmp_path / "pricing_cache.json"
-    cache.write_text(json.dumps({"claude-fable-5": cost._fallback_pricing()["claude-fable-5"]}))
+    cache.write_text(json.dumps({
+        "claude-fable-5": cost._fallback_pricing()["claude-fable-5"],
+        "claude-opus-5": cost._fallback_pricing()["claude-opus-5"],
+        "grok-4.3": cost._fallback_pricing()["grok-4.3"],
+    }))
     monkeypatch.setattr(cost, "CACHE_PATH", cache)
     monkeypatch.setattr(cost, "_cache_stale", lambda: stale)
     monkeypatch.setattr(cost, "_pricing", None)
@@ -238,14 +280,22 @@ def test_new_models_short_names_and_astra_prefix_boundary():
     from token_tracker.ui.format import _model_short
 
     assert _model_short("gpt-6-astra") == "GPT-6 Astra"
+    assert _model_short("gpt-6-sol") == "GPT-6 Sol"
+    assert _model_short("gpt-6-luna") == "GPT-6 Luna"
+    assert _model_short("claude-opus-5-5") == "Opus 5.5"
     assert _model_short("claude-fable-5-1") == "Fable 5.1"
     pricing = cost._fallback_pricing()
     assert cost._resolve_model_key("gpt-6-astral", pricing) is None
     assert cost._resolve_model_key("gpt-60-astra", pricing) is None
+    assert cost._resolve_model_key("gpt-6-solar", pricing) is None
+    assert cost._resolve_model_key("gpt-6-lunar", pricing) is None
 
 
 @pytest.mark.parametrize("namespace", ["chatgpt", "openai"])
-@pytest.mark.parametrize("model", ["gpt-5.6-sol", "gpt-5.6-sol-20260901", "gpt-6-astra"])
+@pytest.mark.parametrize("model", [
+    "gpt-5.6-sol", "gpt-5.6-sol-20260901", "gpt-6-astra",
+    "gpt-6-sol", "gpt-6-luna", "gpt-6-luna-20260922",
+])
 @pytest.mark.parametrize("prompt_tokens", [272_000, 272_001])
 def test_openai_namespaced_models_keep_base_pricing(monkeypatch, capsys, namespace, model, prompt_tokens):
     monkeypatch.setattr(cost, "_pricing", cost._fallback_pricing())
@@ -283,7 +333,8 @@ def test_namespaced_dated_price_precedes_bare_price(monkeypatch):
 
 @pytest.mark.parametrize("model", [
     "third-party/gpt-5.6-sol", "chatgpt-pro/gpt-5.6-sol", "chatgpt/deepseek-v4-flash",
-    "chatgpt/openai/gpt-5.6-sol", "chatgpt/", "chatgpt/gpt-6-astral", "",
+    "chatgpt/openai/gpt-5.6-sol", "chatgpt/", "chatgpt/gpt-6-astral",
+    "chatgpt/gpt-6-solar", "third-party/deepseek-flash", "",
 ])
 def test_namespace_fallback_does_not_strip_unknown_or_nested_prefixes(model):
     assert cost._resolve_model_key_uncached(model, cost._fallback_pricing()) is None
@@ -536,6 +587,63 @@ def test_deepseek_price_switch_timestamp(monkeypatch):
     assert cost.calculate_cost(after) == pytest.approx((1.5 + 4.5 + 0.05) / 7.1)
 
 
+@pytest.mark.parametrize("model", ["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"])
+def test_deepseek_v41_flash_peak_off_peak_and_old_aliases(monkeypatch, model):
+    monkeypatch.setattr(cost, "_pricing", cost._fallback_pricing())
+    usage = dict(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000)
+    peak = make_entry(model=model, timestamp=datetime(2026, 9, 10, 6, tzinfo=UTC), **usage)
+    off_peak = make_entry(model=model, timestamp=datetime(2026, 9, 10, 4, tzinfo=UTC), **usage)
+    weekend = make_entry(model=model, timestamp=datetime(2026, 9, 12, 1, tzinfo=UTC), **usage)
+    assert cost.calculate_cost(peak) == pytest.approx((2 + 8 + 0.04) / 7.1)
+    assert cost.calculate_cost(off_peak) == pytest.approx((1 + 4 + 0.02) / 7.1)
+    assert cost.calculate_cost(weekend) == pytest.approx((1 + 4 + 0.02) / 7.1)
+
+
+def test_deepseek_v41_switch_preserves_prior_flash_and_pro_prices(monkeypatch):
+    monkeypatch.setattr(cost, "_pricing", cost._fallback_pricing())
+    usage = dict(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000)
+    before = make_entry(
+        model="deepseek-v4-flash", timestamp=datetime(2026, 9, 10, 3, 59, 59, tzinfo=UTC),
+        **usage,
+    )
+    pro = make_entry(model="deepseek-v4-pro", timestamp=datetime(2026, 9, 10, 6, tzinfo=UTC), **usage)
+    assert cost.calculate_cost(before) == pytest.approx((3 + 9 + 0.1) / 7.1)
+    assert cost.calculate_cost(pro) == pytest.approx((9 + 27 + 0.3) / 7.1)
+
+
+def test_deepseek_v41_codex_segments_use_request_time_with_old_cache(monkeypatch):
+    stale = cost._fallback_pricing()
+    stale["deepseek-flash"] = {
+        "input_cost_per_token": 99e-6, "output_cost_per_token": 99e-6,
+    }
+    monkeypatch.setattr(cost, "_pricing", stale)
+    segments = (
+        UsageSegment(datetime(2026, 9, 10, 3, 59, 59, tzinfo=UTC), 1_000_000, 1_000_000),
+        UsageSegment(datetime(2026, 9, 10, 4, tzinfo=UTC), 1_000_000, 1_000_000),
+    )
+    entry = make_entry(
+        model="deepseek-v4-flash", agent_id="codex",
+        input_tokens=2_000_000, output_tokens=2_000_000, pricing_segments=segments,
+    )
+    assert cost.calculate_cost(entry) == pytest.approx((3 + 9 + 1 + 4) / 7.1)
+    current = make_entry(
+        model="deepseek-flash", timestamp=datetime(2026, 9, 10, 4, tzinfo=UTC),
+        input_tokens=1_000_000,
+    )
+    assert cost.calculate_cost(current) == pytest.approx(1 / 7.1)
+
+
+def test_deepseek_v41_official_provider_key_uses_off_peak_price(monkeypatch):
+    monkeypatch.setattr(cost, "_pricing", {
+        "deepseek/deepseek-flash": {"input_cost_per_token": 99e-6},
+    })
+    entry = make_entry(
+        model="deepseek/deepseek-flash", timestamp=datetime(2026, 9, 10, 4, tzinfo=UTC),
+        input_tokens=1_000_000,
+    )
+    assert cost.calculate_cost(entry) == pytest.approx(1 / 7.1)
+
+
 def test_deepseek_v4_dynamic_price_does_not_override_explicit_old_model(monkeypatch):
     monkeypatch.setattr(cost, "_pricing", {
         "deepseek-v3.2": {"input_cost_per_token": 7e-6, "output_cost_per_token": 11e-6},
@@ -643,12 +751,19 @@ def test_grok_new_models_and_long_context(monkeypatch):
         cache_read_tokens=1_000_000,
     )
     assert cost.calculate_cost(long) == pytest.approx(200_000 * 4e-6 + 12 + 1)
+    latest = make_entry(model="grok-4.7", input_tokens=200_000, output_tokens=1_000_000,
+                        cache_read_tokens=1_000_000)
+    assert cost.calculate_cost(latest) == pytest.approx(200_000 * 4e-6 + 12 + 1)
+    assert cost.calculate_cost(make_entry(model="grok-4.7", input_tokens=199_999)) == pytest.approx(
+        199_999 * 2e-6
+    )
 
 
 @pytest.mark.parametrize(
     ("model", "provider_key", "expected"),
     [
         ("grok-4.6", "xai/grok-4.6", 2.0),
+        ("grok-4.7", "xai/grok-4.7", 2.0),
         ("glm-5.3", "zai/glm-5.3", 1.4),
     ],
 )
@@ -664,7 +779,7 @@ def test_gemini_and_grok_short_names():
     from token_tracker.ui.format import MODEL_SHORT
     for k in (
         "gemini-2.5-pro", "gemini-3-pro-preview", "gemini-3.5-flash",
-        "gemini-3.6-flash", "gemini-3.7-pro",
-        "grok-4.3", "grok-4.5", "grok-4.6", "grok-build-0.1", "grok-code-fast-1",
+        "gemini-3.6-flash", "gemini-3.7-pro", "gemini-3.8-flash",
+        "grok-4.3", "grok-4.5", "grok-4.6", "grok-4.7", "grok-build-0.1", "grok-code-fast-1",
     ):
         assert k in MODEL_SHORT, f"MODEL_SHORT missing {k}"
