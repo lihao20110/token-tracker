@@ -5,13 +5,13 @@
 
 ## 当前阶段
 
-**2026-09-28 14:36 `0.5.8` 已完成升级、验证与打包（已获准发布，执行中）**：包含下述 Codex Hook 纯文本兼容、新模型定价与 GPT 命名空间识别，以及 Windows Kimi 状态栏命令修复。`pyproject.toml` / `uv.lock` 已同步版本，README 中英文同步 Codex 纯文本与主题范围。完整 pytest 和英文 dumb terminal pytest 串行各 **456 passed**，Ruff、mypy（41 个源文件）、锁文件与 diff 检查通过。受控源码快照构建 sdist / wheel，Twine check 与 44 个包文件逐字节检查通过，隔离安装本地 wheel 输出 0.5.8；产物位于 `dist/`。已获准提交、tag、push 并上传 PyPI，远端发布与安装回验待完成；品牌草稿与原有规范迁移不纳入发布提交；Windows 真机限制沿用既有记录。
+**2026-09-28 14:42 `0.5.8` 已发布 PyPI（源码与 tag 已 push）**：包含 Codex Hook 纯文本兼容、新模型定价与 GPT 命名空间识别，以及 Windows Kimi 状态栏命令修复。版本与锁文件、README 中英文已同步。发布 commit `f8e572c` 与 annotated tag `v0.5.8` 已推送；完整 pytest 与英文 dumb terminal pytest 各 **456 passed**，Ruff、mypy（41 个源文件）、锁文件与 diff 检查通过。[GitHub CI](https://github.com/stormzhang/token-tracker/actions/runs/36387698193) 的 Python 3.11 / 3.12 均成功。sdist / wheel 经 Twine 检查，44 个包文件与发布提交一致；PyPI 元数据及实际下载 SHA-256 与本地一致，官方索引无缓存隔离安装正确输出 0.5.8。用户级工具未自动升级；品牌草稿与原有规范迁移保持未提交；Windows 真机限制沿用既有记录。
 
-**2026-09-26 18:25 Codex Hook ANSI 乱码兼容修复完成（未发版）**：Codex 0.156.0 起过滤 Hook 消息中的控制字符，旧版彩色 `systemMessage` 的 ESC 被删除后留下 `[38;2;…m` 裸码（[上游变更](https://github.com/openai/codex/pull/46710)）。Codex 伪 statusline 改为两行纯文本，保留项目、token、成本、模型、额度与进度条；`STATUSLINE_HOOK_VERSION` 升至 2.0，供存量安装自动替换脚本。Claude Code / Kimi Code 的着色路径未改；本地用户级脚本未覆盖。完整与英文 dumb terminal pytest、Ruff、mypy 和 diff 检查通过。
+**2026-09-26 18:25 Codex Hook ANSI 乱码兼容修复已随 0.5.8 发布**：Codex 0.156.0 起过滤 Hook 消息中的控制字符，旧版彩色 `systemMessage` 的 ESC 被删除后留下 `[38;2;…m` 裸码（[上游变更](https://github.com/openai/codex/pull/46710)）。Codex 伪 statusline 改为两行纯文本，保留项目、token、成本、模型、额度与进度条；`STATUSLINE_HOOK_VERSION` 升至 2.0，供存量安装自动替换脚本。Claude Code / Kimi Code 的着色路径未改；本地用户级脚本未覆盖。完整与英文 dumb terminal pytest、Ruff、mypy 和 diff 检查通过。
 
-**2026-09-23 13:00 新模型定价适配完成（未发版）**：GPT-6 Sol / Luna 增加标准价与单次请求 >272K 阶梯价，Opus 5.5 独立降价且保留 Opus 5 历史价，Grok 4.7 补 200K 阶梯价；DeepSeek `deepseek-flash` 与两个 V4 Flash 旧 ID 从 2026-09-10 04:00 UTC 起按 V4.1 Flash 新峰谷价估算，之前的请求与 V4 Pro 保持原价。补齐模型短名、旧缓存与边界回归；完整及英文 dumb terminal pytest 各 455 passed，Ruff、mypy（41 个源文件）、锁文件和 diff 检查通过。无新 adapter 或 statusline 模板变更，尚未发布。
+**2026-09-23 13:00 新模型定价适配已随 0.5.8 发布**：GPT-6 Sol / Luna 增加标准价与单次请求 >272K 阶梯价，Opus 5.5 独立降价且保留 Opus 5 历史价，Grok 4.7 补 200K 阶梯价；DeepSeek `deepseek-flash` 与两个 V4 Flash 旧 ID 从 2026-09-10 04:00 UTC 起按 V4.1 Flash 新峰谷价估算，之前的请求与 V4 Pro 保持原价。补齐模型短名、旧缓存与边界回归；完整及英文 dumb terminal pytest 各 455 passed，Ruff、mypy（41 个源文件）、锁文件和 diff 检查通过。该项无新 adapter 或 statusline 模板变更，已随 0.5.8 发布。
 
-**2026-09-10 00:09 GPT 模型命名空间识别已修复（未发版）**：`chatgpt/gpt-5.6-sol` 原先无法匹配已有定价并按 $0 计；现支持 `chatgpt/gpt-*`、`openai/gpt-*` 缺少独立报价时复用裸模型解析，日期后缀和长上下文阶梯价保持一致。完整 ID 及其变体报价优先，完整 ID 精确价也优先于已缓存的裸模型兜底；未知第三方、嵌套前缀和非 GPT 模型不剥除。完整与英文 dumb terminal pytest 各 **416 passed**，Ruff、mypy 和 diff 检查通过。
+**2026-09-10 00:09 GPT 模型命名空间识别修复已随 0.5.8 发布**：`chatgpt/gpt-5.6-sol` 原先无法匹配已有定价并按 $0 计；现支持 `chatgpt/gpt-*`、`openai/gpt-*` 缺少独立报价时复用裸模型解析，日期后缀和长上下文阶梯价保持一致。完整 ID 及其变体报价优先，完整 ID 精确价也优先于已缓存的裸模型兜底；未知第三方、嵌套前缀和非 GPT 模型不剥除。完整与英文 dumb terminal pytest 各 **416 passed**，Ruff、mypy 和 diff 检查通过。
 
 **2026-09-09 19:55 `0.5.7` 已发布 PyPI（源码与 tag 已 push）**：包含 Astra / Fable 5.1 定价、Codex 缓存写入计价、此前模型价格校准与扫描性能优化。发布 commit `30a7892`、annotated tag `v0.5.7` 已推送；完整 pytest 与英文 dumb terminal 各 **395 passed**，Ruff、mypy（41 个源文件）、锁文件和 diff 检查通过。从提交快照构建 sdist / wheel，Twine check 通过，wheel 的 44 个包文件与提交逐项一致。PyPI 元数据和实际下载产物的 SHA-256 均与本地一致（wheel `3f4b6d14…3d4a`、sdist `09294a28…452a`）；官方索引无缓存隔离安装后 `tt --version` 正确输出 0.5.7。用户级工具仍为旧安装，未自动升级；原有规范迁移改动和品牌素材保持未提交。
 
@@ -168,7 +168,7 @@
 
 ## 最近验证
 
-- **2026-09-28 14:36**：**0.5.8 发布候选验证**。完整 pytest 456 passed、英文 dumb terminal pytest 456 passed（均独立串行），Ruff / mypy / `uv lock --check` / `git diff --check` 通过。首次两套 pytest 并发使用相同测试 FIFO，造成一项侧边栏用例失败；独立复跑两套均通过，未改测试或业务逻辑。sdist / wheel 的 44 个包文件与受控源码快照一致，未混入品牌草稿或临时文件；Twine check 通过，本地 wheel 无缓存隔离安装输出 0.5.8。wheel SHA-256 `1e8d8785…e7faf`、sdist `bcdd4878…71ddf`；构建仅有既存 setuptools license 弃用警告。PyPI 上传与远端安装回验尚未执行。
+- **2026-09-28 14:42**：**0.5.8 发布与远端回验完成**。完整 pytest、英文 dumb terminal pytest 独立串行各 456 passed，Ruff / mypy / 锁文件 / diff 检查通过；首次并发测试发生同名 FIFO 冲突，独立复跑两套均通过，未改测试或业务逻辑。Twine check、44 个包文件与发布提交逐字节检查通过，产物未混入品牌草稿或临时文件。远端 main 与 `v0.5.8` 均指向发布提交 `f8e572c`；[GitHub CI](https://github.com/stormzhang/token-tracker/actions/runs/36387698193) 的 Python 3.11 / 3.12 全部成功。PyPI 元数据与实际下载 SHA-256 均匹配本地：wheel `1e8d8785…e7faf`、sdist `bcdd4878…71ddf`；`uvx --no-cache --index-url https://pypi.org/simple --from token-tracker==0.5.8 tt --version` 输出 0.5.8。构建仅有既存 setuptools license 弃用警告；用户级安装未改。
 
 - **2026-09-26 18:25**：**Codex Hook 纯文本输出**。生成脚本及 DeepSeek 会话端到端输出不含 ANSI，项目、进度条和成本字段回归通过；完整 pytest 与英文 dumb terminal pytest 均通过，Ruff、mypy（41 个源文件）、`git diff --check` 通过。英文测试首次因沙箱阻止只读 `ps` 失败，获准后复跑通过；未改本机安装或 Codex 配置。
 
