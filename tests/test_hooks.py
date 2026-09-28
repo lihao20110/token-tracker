@@ -197,15 +197,28 @@ def test_statusline_script_bakes_theme_colors(monkeypatch):
 
 
 def test_codex_statusline_render_injects_version():
-    # Codex 伪 statusline 脚本：版本号 + 主题配色注入、占位符不残留、语法正确（无 __TT_PYTHON__ 需求）。
+    # Codex 伪 statusline 脚本：只注入版本号，不再向 Hook 输出 ANSI 配色。
     rendered = hooks._render_codex_statusline_hook()
     assert f'__version__ = "{hooks.STATUSLINE_HOOK_VERSION}"' in rendered
     assert "__STATUSLINE_HOOK_VERSION__" not in rendered
-    assert "__STATUSLINE_TRUECOLOR__" not in rendered  # 配色占位符已替换
-    assert "'reset'" in rendered and "38;2" in rendered  # 注入了 truecolor 配色 dict（跟随主题）
+    assert "__STATUSLINE_TRUECOLOR__" not in rendered
+    assert "38;2" not in rendered
+    assert "\\033[" not in rendered
     assert ".load_session_rate_limits(" not in rendered
     assert "codex._parse_jsonl" not in rendered
     compile(rendered, "<codex-statusline>", "exec")
+
+
+def test_codex_statusline_plain_segments():
+    namespace = {"__name__": "test_codex_statusline"}
+    exec(compile(hooks._render_codex_statusline_hook(), "codex-statusline.py", "exec"), namespace)
+    namespace["_git_status"] = lambda cwd: ("main", 3, 2, 1)
+
+    assert namespace["_render_project"]("/tmp/example") == "[example](main +3 -2 ?1)"
+    assert namespace["_bar"](-5) == "░░░░░░░░ 0%"
+    assert namespace["_bar"](50) == "████░░░░ 50%"
+    assert namespace["_bar"](120) == "████████ 100%"
+    assert namespace["_render_limit"]("5h", 50, 3_600, 0) == "5h ████░░░░ 50% (reset 1h0m)"
 
 
 def test_codex_statusline_records_terminal_map_without_touching_cc_status(tmp_path):
@@ -284,10 +297,14 @@ def test_codex_statusline_deepseek_cost_uses_each_request_time(tmp_path):
         [sys.executable, str(script)], input=json.dumps(payload), text=True,
         capture_output=True, check=True, env={**os.environ, "HOME": str(tmp_path)},
     )
-    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+    message = json.loads(result.stdout)["systemMessage"]
 
     # 周一峰时 ¥12 + 周六谷时 ¥6，按 7.1 折算后为 $2.54；不能拿当前时段套整段会话。
-    assert "Cost: $2.54" in plain
+    assert "Cost: $2.54" in message
+    assert "Total: 4.0M" in message
+    assert "Model: deepseek-v4-flash high" in message
+    assert "\x1b" not in message
+    assert "[38;2;" not in message
 
 
 @pytest.mark.parametrize("written, expected", [(None, 0.92), (30_000, 0.995), (-1, None)])

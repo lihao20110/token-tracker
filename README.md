@@ -13,14 +13,14 @@
 ## 功能亮点
 
 - **多 Agent 统一追踪** — Claude Code + Codex + Kimi Code 统一读取，多 Agent 按来源分组
-- **状态栏集成** — Claude Code 用官方 StatusLine 接口；**Codex 业界首创伪 statusline 方案**（hook 注入两行真彩色状态栏，把官方未开放的能力在 Codex 里做了出来）；Kimi Code 用官方 `status_line` 接口
+- **状态栏集成** -- Claude Code 用官方 StatusLine 接口；Codex 用 Stop hook 在回答后追加两行纯文本用量状态；Kimi Code 用官方 `status_line` 接口
 - **实时侧边栏** — `tt sidebar` 窄窗格常驻面板：全部活跃会话一屏总览（状态灯 + 最近提示词 + 「下一步」建议），点击会话直达对应 iTerm2 / tmux 窗格
 - **当前会话自动分屏** — Codex 中显式执行 `$tt-sidebar`，在原会话右侧自动打开 1/3 宽度的独立提示词侧边栏
 - **限额监控** — 实时 5h / 7d 配额百分比 + 重置倒计时
 - **多维成本分析** — 会话 / 日 / 周 / 月多维报表，等效成本统计
 - **定价识别** -- litellm 在线定价 + 内置官方价双层兜底，覆盖 GPT-6 Astra / Sol / Luna、Claude Opus 5.5 / Fable 5.1、Grok 4.7 及 Claude / OpenAI / Gemini 和国产主流（Kimi / GLM / Qwen / 豆包 / DeepSeek / MiniMax / MiMo）；按单次请求计算长上下文阶梯价与 DeepSeek 峰谷价（周末全天谷价），Codex 缓存读写分别计价；未知模型优先套用已知系列价，仍无法识别时提示缺价
 - **会话洞察** — 项目、模型、时长、消息数一览
-- **多主题统一配色** — 6 套主题（Catppuccin 全家 + Nord + Dracula），CLI 报表与各 Agent 状态栏**同源**，`tt theme` 一键切换
+- **多主题统一配色** -- 6 套主题（Catppuccin 全家 + Nord + Dracula），CLI 报表与 Claude Code、Kimi Code 状态栏同源，`tt theme` 一键切换；Codex Hook 状态保持纯文本
 - **零配置** — 自动检测已安装的 Agent，直接读取本地数据
 - **隐私安全** — 数据纯本地存储，不采集、不上传
 
@@ -58,18 +58,20 @@
 
 </details>
 
-### Codex（伪 statusline，业界首创）
+### Codex（伪 statusline）
 
-Codex 官方暂不支持自定义 StatusLine。Token Tracker 通过 hook 注入了一个**伪 statusline**——每次回答完成后，在回答尾部追加两行真彩色状态栏。**这是目前业界少见的把状态栏能力在 Codex 里做出来的实现方案**。
+Codex 官方暂不支持自定义 StatusLine。Token Tracker 通过 Stop hook 在每次回答完成后追加两行纯文本用量状态。Codex 0.156.0 起会过滤 Hook 文本中的 ANSI 控制字符，因此不再向 Hook 输出颜色序列。
 
-![Codex StatusLine](assets/screenshot-statusline-codex.png)
+![旧版 Codex 中的彩色 Hook 状态示例](assets/screenshot-statusline-codex.png)
+
+上图是 Codex 0.156.0 之前的历史截图；当前版本显示相同字段和进度条，但不着色。
 
 **两行布局**：
 
-- **L1** `[项目](分支 +A -D) | Total: <会话累计 token> | Model: <模型 推理强度>` —— Total 橙、Model 红；第三方 API provider（如 DeepSeek）无订阅配额，L1 加显示会话 Cost（按逐请求时间与上下文档位套用内置官方价估算）
+- **L1** `[项目](分支 +A -D) | Total: <会话累计 token> | Model: <模型 推理强度>` -- 第三方 API provider（如 DeepSeek）无订阅配额，L1 加显示会话 Cost（按逐请求时间与上下文档位套用内置官方价估算）
 - **L2** `Limit: 5h <进度条> % (reset <倒计时>) | 7d <进度条> % (reset <倒计时>) | <窗口> Ctx <进度条> %` —— 配额按当前会话 / 同 model_provider 取数，多账号多 provider 混跑不串数据；无配额数据时不挂 `Limit:` 前缀
 
-渲染 24-bit 真彩色、**不进模型上下文**（实测），**配色跟随当前主题**（与 CLI 报表 / CC 状态栏同源，`tt theme` 切换三者一起变）。`tt unsetup` 一并移除。
+Hook 状态**不进模型上下文**（实测），不跟随主题着色。`tt unsetup` 一并移除。
 
 ### Kimi Code（官方接口）
 
@@ -180,7 +182,7 @@ tt --version      # 查看版本（-v / -V 同义）
 
 ## 配色主题
 
-内置 6 套主题，CLI 报表与各 Agent 状态栏（CC / Codex / Kimi Code）**统一同源**（切主题一起变）：
+内置 6 套主题，CLI 报表与 Claude Code、Kimi Code 状态栏**统一同源**（切主题一起变）；Codex Hook 状态保持纯文本：
 
 ![支持的主题](assets/screenshot-themes.png)
 

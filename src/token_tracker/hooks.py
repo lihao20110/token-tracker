@@ -50,7 +50,7 @@ KIMI_STATUSLINE_QUOTA_PATH = os.path.join(_TT, "tt-kimi-quota.json")
 STATUS_FILE = config.STATUS_FILE                          # CC statusline 缓存（单一权威定义在 config）
 TERMINAL_MAP_FILE = config.TERMINAL_MAP_FILE              # Codex Stop hook 采集的终端定位映射
 HOOK_VERSION = "2.1"  # 2.0: 采集 _terminal_map（sidebar 点击跳转）；2.1: 共享状态无条件随帧携带、防异常帧清表
-STATUSLINE_HOOK_VERSION = "1.9"  # 1.9: 缓存写入独立计价，快照缺失时使用相同的 token 拆分
+STATUSLINE_HOOK_VERSION = "2.0"  # 2.0: Codex Hook 输出纯文本，避免新版 TUI 将 ANSI 序列显示为乱码
 KIMI_STATUSLINE_HOOK_VERSION = "1.2"  # 1.2: Model 段加实际 effort（wire thinkingEffort），新增 Out t/s（output÷请求时长）
 
 CC_BACKUP_PATH = os.path.join(_TT, "cc-backup.json")
@@ -86,13 +86,9 @@ def _render_hook_script() -> str:
 
 
 def _render_codex_statusline_hook() -> str:
-    """注入版本号 + 当前主题 statusline 配色（truecolor），得到要落盘的 Codex 伪 statusline 脚本。
-    跟随主题：tt theme set 经 update_hook 重烘焙；不需 __TT_PYTHON__（脚本无 subprocess 调 tt）。"""
-    name = config.resolve_theme()
-    return (
-        _load_template("codex_statusline.py")
-        .replace("__STATUSLINE_HOOK_VERSION__", STATUSLINE_HOOK_VERSION)
-        .replace("__STATUSLINE_TRUECOLOR__", repr(themes.theme_to_statusline_ansi(name)))
+    """注入版本号，得到只含可打印文本的 Codex 伪 statusline 脚本。"""
+    return _load_template("codex_statusline.py").replace(
+        "__STATUSLINE_HOOK_VERSION__", STATUSLINE_HOOK_VERSION
     )
 
 

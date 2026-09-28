@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""token-tracker Codex 伪 statusline（Stop hook）：每次回答后追加两行彩色 status，仿 CC statusline。
+"""token-tracker Codex 伪 statusline（Stop hook）：每次回答后追加两行纯文本 status。
 L1：[项目](分支 +A -D) | Total: <会话累计 token> | Cost: $<第三方 provider 会话成本> | Model: <模型>
 L2：Limit: 5h <bar> <%> (reset) | 7d <bar> <%> (reset) | <window> Ctx <bar> <%>
 数据：单次扫描当前会话同时取得 Total、逐请求成本和 5h/7d 限额；当前会话没有标准限额时，按
@@ -17,17 +17,6 @@ from pathlib import Path
 
 TERMINAL_MAP_FILE = os.path.join(os.path.expanduser("~/.config/token-tracker"), "tt-terminal-map.json")
 MAX_TERMINAL_MAPPINGS = 20
-
-# 配色由 tt setup / update_hook / tt theme set 烘焙时注入（跟随当前主题，与 CC statusline / CLI 报表同源）。
-# Codex TUI 实测支持 24-bit truecolor，故只注入 truecolor 一套（不像 CC statusline 还需 256 兜底）。
-C = __STATUSLINE_TRUECOLOR__
-RST = C["reset"]
-FAINT, BOLD = "\033[2m", "\033[1m"
-
-
-def _color(pct):
-    return C["bar_ok"] if pct < 50 else C["bar_warn"] if pct < 80 else C["bar_danger"]
-
 
 def _fmt_duration(s):
     s = int(s)
@@ -47,13 +36,10 @@ def fmt_tokens(n):
 
 
 def _bar(pct, width=8):
-    """进度条（仿 CC statusline）：█ 填充档位色 + ░ 空槽（>0 也染档位色），尾接 % 档位色。"""
+    """Codex 会过滤 Hook 输出中的 ANSI 控制码，因此进度条只使用可打印字符。"""
     pct = max(0.0, min(100.0, float(pct)))
     filled = round(pct / 100 * width)
-    empty = width - filled
-    color = _color(pct)
-    empty_s = f"{color}{'░' * empty}{RST}" if pct > 0 and empty else "░" * empty
-    return f"{color}{'█' * filled}{RST}{empty_s} {color}{pct:.0f}%{RST}"
+    return f"{'█' * filled}{'░' * (width - filled)} {pct:.0f}%"
 
 
 def _total_tokens(info):
@@ -239,23 +225,23 @@ def _render_project(cwd):
     name = os.path.basename(cwd.rstrip("/"))
     branch, a, d, u = _git_status(cwd)
     if not branch:
-        return f"{BOLD}{C['project']}[{name}]{RST}"
-    inner = f"{C['branch']}{branch}{RST}"
+        return f"[{name}]"
+    inner = branch
     if a:
-        inner += f" {C['added']}+{a}{RST}"
+        inner += f" +{a}"
     if d:
-        inner += f" {C['deleted']}-{d}{RST}"
+        inner += f" -{d}"
     if u:
-        inner += f" {C['untracked']}?{u}{RST}"
-    return f"{BOLD}{C['project']}[{name}]{RST}({inner})"
+        inner += f" ?{u}"
+    return f"[{name}]({inner})"
 
 
 def _render_limit(label, pct, resets_at, now_ts):
-    s = f"{C['label']}{label} {RST}{_bar(pct)}"
+    s = f"{label} {_bar(pct)}"
     if resets_at:
         remain = int(resets_at) - now_ts
         if remain > 0:
-            s += f" {FAINT}{C['label']}(reset {_fmt_duration(remain)}){RST}"
+            s += f" (reset {_fmt_duration(remain)})"
     return s
 
 
@@ -302,18 +288,18 @@ def main():
         line1.append(proj)
     total = _total_tokens(info) if info else 0
     if total:
-        line1.append(f"{C['tokens']}Total: {fmt_tokens(total)}{RST}")  # 整体取 tokens 槽（mocha=peach/橙）
+        line1.append(f"Total: {fmt_tokens(total)}")
     model = model or payload.get("model") or ""  # session turn_context 的 model（gpt-5.5）优先
     # 第三方 API provider（deepseek 等）无账号配额：L1 补会话成本（仿 CC 的 Cost 槽位）
     usage_entry = snapshot.usage_entry if snapshot else None
     cost = _session_cost(info, model, usage_entry) if provider and provider != "openai" else None
     if cost is not None:
         cost_s = f"${cost:.2f}" if cost >= 0.01 else f"${cost:.4f}"
-        line1.append(f"{C['total']}Cost: {cost_s}{RST}")
+        line1.append(f"Cost: {cost_s}")
     if model:
         # effort 缺失时显示 default（Codex 默认 reasoning level），与 TUI 的 Current reasoning level 对齐
         label = f"{model} {effort or 'default'}"
-        line1.append(f"{C['total']}Model: {label}{RST}")  # 整体取 total 槽（mocha=red/红）
+        line1.append(f"Model: {label}")
 
     # L2: Limit: 5h | 7d | <window> Ctx（仿 CC statusline，带进度条 + reset）
     line2 = []
@@ -327,13 +313,13 @@ def main():
     if ctx is not None:
         size = (info or {}).get("model_context_window") or 0
         prefix = f"{fmt_tokens(size)} " if size else ""
-        line2.append(f"{C['label']}{prefix}Ctx {RST}{_bar(ctx)}")
+        line2.append(f"{prefix}Ctx {_bar(ctx)}")
     if line2 and has_limit:  # 第三方 provider 只有 Ctx 时不挂 Limit: 前缀
-        line2[0] = f"{C['label']}Limit:{RST} " + line2[0]
+        line2[0] = "Limit: " + line2[0]
 
     lines = [" | ".join(x) for x in (line1, line2) if x]
     if lines:
-        # 开头加 \n：Codex 把 systemMessage 包成 "warning:" 开头，让 status 内容另起一行、与之分开
+        # 开头换行，让 status 内容与 Codex 的 Hook 提示分开。
         print(json.dumps({"systemMessage": "\n" + "\n".join(lines)}))
 
 

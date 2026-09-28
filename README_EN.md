@@ -13,13 +13,13 @@ Custom StatusLine integration + CLI Dashboard — see token usage, cost, and rat
 ## Highlights
 
 - **Unified multi-agent tracking** — Claude Code + Codex + Kimi Code in one place, grouped by source
-- **Status line integration** — Claude Code via official StatusLine API; **Codex industry-first faux statusline** (hook-injected two-line truecolor status — bringing an official-unsupported capability to Codex); Kimi Code via the official `status_line` API
+- **Status line integration** -- Claude Code via the official StatusLine API; Codex via a Stop hook that appends two lines of plain-text usage status; Kimi Code via the official `status_line` API
 - **Live sidebar** — `tt sidebar` shows all active sessions (Claude Code + Codex + Kimi Code); `$tt-sidebar` in Codex or `/skill:tt-sidebar` in Kimi Code opens a current-session-only pane on the right at one-third width
 - **Rate limit monitoring** — real-time 5h / 7d quota usage with reset countdown
 - **Multi-dimensional cost analysis** — per-session, daily, weekly, monthly cost breakdown
 - **Pricing resolution** -- litellm live pricing + built-in official-price fallback, including GPT-6 Astra / Sol / Luna, Claude Opus 5.5 / Fable 5.1, Grok 4.7, and major Claude / OpenAI / Gemini and Chinese models (Kimi / GLM / Qwen / Doubao / DeepSeek / MiniMax / MiMo); long-context tiers and DeepSeek peak/off-peak rates (weekends are fully off-peak) are calculated per request, with separate Codex cache-read and cache-write pricing. Unknown models use known family rates where available; unresolved models emit a missing-price warning
 - **Session insights** — project, model, duration, message count per session
-- **Unified multi-theme** — 6 themes (Catppuccin family + Nord + Dracula) shared across CLI reports and every agent's status line; switch with `tt theme`
+- **Unified multi-theme** -- 6 themes (Catppuccin family + Nord + Dracula) shared across CLI reports and the Claude Code / Kimi Code status lines; switch with `tt theme`. Codex hook status remains plain text
 - **Zero config** — auto-detects installed agents, reads local data directly
 - **Privacy first** — all data stays local, no collection or upload
 
@@ -57,18 +57,20 @@ Built on the Claude Code official custom StatusLine API — **all data comes dir
 
 </details>
 
-### Codex (faux statusline — industry-first)
+### Codex (faux statusline)
 
-Codex doesn't yet support custom StatusLine. Token Tracker injects a **faux statusline** via a hook — after each turn completes, two truecolor status lines are appended to the response. **This is a rare implementation that brings a status line to Codex despite no official support.**
+Token Tracker uses a Stop hook to append two lines of plain-text usage status after each response. Plain text avoids visible ANSI fragments when Codex filters control characters from hook messages.
 
-![Codex StatusLine](assets/screenshot-statusline-codex.png)
+![Historical colored hook status in older Codex versions](assets/screenshot-statusline-codex.png)
+
+The screenshot shows the earlier colored output. The current version keeps the same fields and progress bars without colors.
 
 **Two-line layout**:
 
-- **L1** `[project](branch +A -D) | Total: <session tokens> | Model: <model reasoning>` — Total in orange, Model in red; third-party API providers (e.g. DeepSeek) have no subscription quota, so L1 also shows session Cost (estimated from built-in official rates using each request's timestamp and context tier)
+- **L1** `[project](branch +A -D) | Total: <session tokens> | Model: <model reasoning>` -- third-party API providers (e.g. DeepSeek) have no subscription quota, so L1 also shows session Cost (estimated from built-in official rates using each request's timestamp and context tier)
 - **L2** `Limit: 5h <bar> % (reset <ttl>) | 7d <bar> % (reset <ttl>) | <window> Ctx <bar> %` — quota is read from the current session / same model_provider, so multiple accounts and providers never cross-contaminate; the `Limit:` prefix is hidden when no quota data exists
 
-Renders 24-bit truecolor, **does not enter the model context** (verified), and **follows the current theme** (same source as the CLI reports / CC status line; `tt theme` switches all three together). `tt unsetup` removes it.
+Hook status **does not enter the model context** (verified) and remains plain text regardless of the selected theme. `tt unsetup` removes it.
 
 ### Kimi Code (official API)
 
@@ -146,7 +148,7 @@ tt --version      # show version (-v / -V)
 
 ## Color Themes
 
-6 built-in themes, **shared** across CLI reports and every agent's status line (CC / Codex / Kimi Code) — switching changes them all:
+6 built-in themes, **shared** across CLI reports and the Claude Code / Kimi Code status lines; Codex hook status remains plain text:
 
 ![Supported themes](assets/screenshot-themes.png)
 
